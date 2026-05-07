@@ -1,9 +1,16 @@
+function formatLabel(label) {
+  return label
+    .split("_")
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ");
+}
+
 function SimpleBarChart({ title, rows, labelKey, valueKey }) {
   if (!rows?.length) {
     return (
-      <section className="panel-card">
+      <section className="panel-card compact-card">
         <h3>{title}</h3>
-        <p>Sin datos todavía.</p>
+        <p>Sin datos todavia.</p>
       </section>
     );
   }
@@ -11,7 +18,7 @@ function SimpleBarChart({ title, rows, labelKey, valueKey }) {
   const maxValue = Math.max(...rows.map((row) => Number(row[valueKey]) || 0), 1);
 
   return (
-    <section className="panel-card">
+    <section className="panel-card compact-card">
       <h3>{title}</h3>
       <div className="chart-list">
         {rows.map((row, index) => (
@@ -34,9 +41,9 @@ function SimpleBarChart({ title, rows, labelKey, valueKey }) {
 function DataTable({ title, rows }) {
   if (!rows?.length) {
     return (
-      <section className="panel-card">
+      <section className="panel-card compact-card">
         <h3>{title}</h3>
-        <p>Sin datos todavía.</p>
+        <p>Sin datos todavia.</p>
       </section>
     );
   }
@@ -44,14 +51,14 @@ function DataTable({ title, rows }) {
   const columns = Object.keys(rows[0]);
 
   return (
-    <section className="panel-card">
+    <section className="panel-card compact-card">
       <h3>{title}</h3>
       <div className="table-wrapper">
         <table>
           <thead>
             <tr>
               {columns.map((column) => (
-                <th key={column}>{column}</th>
+                <th key={column}>{formatLabel(column)}</th>
               ))}
             </tr>
           </thead>
@@ -70,12 +77,41 @@ function DataTable({ title, rows }) {
   );
 }
 
+function SummaryCards({ data }) {
+  const lowStock = data.low_stock_products?.length || 0;
+  const wasteAlerts = data.most_wasted_products?.length || 0;
+  const supplierLoad = data.orders_by_supplier?.length || 0;
+
+  const totalLoss = (data.waste_economic_losses || []).reduce(
+    (sum, item) => sum + (Number(item.economic_loss) || 0),
+    0,
+  );
+
+  const cards = [
+    { label: "Stock critico", value: lowStock },
+    { label: "Productos con merma", value: wasteAlerts },
+    { label: "Proveedores activos", value: supplierLoad },
+    { label: "Perdida estimada", value: `${Math.round(totalLoss)} EUR` },
+  ];
+
+  return (
+    <div className="summary-grid">
+      {cards.map((card) => (
+        <article key={card.label} className="summary-card">
+          <span>{card.label}</span>
+          <strong>{card.value}</strong>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 export default function DataPanel({ data }) {
   if (!data) {
     return (
-      <section className="panel-card">
+      <section className="panel-card compact-card">
         <h3>Resultados</h3>
-        <p>Las tablas y gráficos aparecerán aquí cuando el agente devuelva datos.</p>
+        <p>Las tablas y graficos apareceran aqui cuando el sistema devuelva datos.</p>
       </section>
     );
   }
@@ -90,15 +126,16 @@ export default function DataPanel({ data }) {
 
   return (
     <div className="panel-grid">
+      <SummaryCards data={data} />
       <DataTable title="Productos con menor stock" rows={data.low_stock_products} />
       <SimpleBarChart
-        title="Productos más desechados"
+        title="Productos mas desechados"
         rows={data.most_wasted_products}
         labelKey="product_name"
         valueKey="wasted_quantity"
       />
       <SimpleBarChart
-        title="Pérdidas económicas por desecho"
+        title="Perdidas economicas por desecho"
         rows={data.waste_economic_losses}
         labelKey="reason"
         valueKey="economic_loss"
