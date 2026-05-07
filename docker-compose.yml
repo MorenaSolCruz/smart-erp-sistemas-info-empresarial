@@ -1,0 +1,47 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: erp-llm-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+
+  backend:
+    build:
+      context: ./backend
+    container_name: erp-llm-backend
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+    env_file:
+      - ./backend/.env.example
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py wait_for_mongo &&
+             python manage.py runserver 0.0.0.0:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: erp-llm-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:8000/api
+      VITE_DEFAULT_LLM_PROVIDER: mock
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+
+volumes:
+  mongodb_data:
+

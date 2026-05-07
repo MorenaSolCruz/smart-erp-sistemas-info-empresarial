@@ -1,0 +1,17 @@
+.env
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.sqlite3
+node_modules/
+dist/
+build/
+.DS_Store
+backend/.env
+frontend/.env
+backend/staticfiles/
+backend/media/
+mongodb_data/
+
