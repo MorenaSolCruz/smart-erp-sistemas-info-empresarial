@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from mongoengine.errors import NotUniqueError, ValidationError
+
 from apps.suppliers.models import Supplier
 
 
@@ -25,10 +27,22 @@ def get_supplier_by_id(supplier_id):
 
 
 def get_supplier_document_by_name(name):
-    return Supplier.objects.get(name__iexact=name)
+    exact_supplier = Supplier.objects(name=name).first()
+    if exact_supplier:
+        return exact_supplier
+
+    matches = list(Supplier.objects(name__iexact=name).limit(2))
+    if not matches:
+        raise Supplier.DoesNotExist("Proveedor no encontrado.")
+    if len(matches) > 1:
+        raise ValidationError("Hay varios proveedores con nombres muy parecidos. Usa el nombre exacto que aparece al listar proveedores.")
+    return matches[0]
 
 
 def create_supplier(data):
+    if Supplier.objects(name__iexact=data["name"]).first():
+        raise NotUniqueError("Ya existe un proveedor con ese nombre.")
+
     now = datetime.utcnow()
     supplier = Supplier(
         name=data["name"],
@@ -56,7 +70,13 @@ def update_supplier(supplier_id, data):
 
 
 def delete_supplier(supplier_id):
+    from apps.purchase_orders.models import PurchaseOrder
+
     supplier = Supplier.objects.get(id=supplier_id)
+
+    if PurchaseOrder.objects(supplier=supplier).first():
+        raise ValidationError("No se puede eliminar el proveedor porque tiene pedidos asociados.")
+
     supplier.delete()
     return {"deleted": True, "id": supplier_id}
 

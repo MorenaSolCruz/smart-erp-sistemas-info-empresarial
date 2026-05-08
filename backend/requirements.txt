@@ -4,4 +4,5 @@ django-cors-headers==4.6.0
 mongoengine==0.29.1
 pymongo==4.10.1
 python-dotenv==1.0.1
+requests==2.32.3
 

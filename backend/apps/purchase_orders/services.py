@@ -4,7 +4,7 @@ from decimal import Decimal
 from mongoengine.errors import ValidationError
 
 from apps.products.models import Product
-from apps.products.services import adjust_stock
+from apps.products.services import adjust_stock, get_product_document_by_name
 from apps.purchase_orders.models import PurchaseOrder
 from apps.suppliers.models import Supplier
 
@@ -31,6 +31,8 @@ def get_purchase_order_by_id(order_id):
 
 def create_purchase_order(data):
     supplier = Supplier.objects.get(id=data["supplier_id"])
+    if not data.get("items"):
+        raise ValidationError("El pedido debe incluir al menos una línea de producto.")
 
     normalized_items = []
     total_amount = Decimal("0")
@@ -40,12 +42,16 @@ def create_purchase_order(data):
         if item.get("product_id"):
             product = Product.objects.get(id=item["product_id"])
         elif item.get("product_name"):
-            product = Product.objects.get(name__iexact=item["product_name"])
+            product = get_product_document_by_name(item["product_name"])
         else:
             raise ValidationError("Cada item debe incluir product_id o product_name.")
 
         quantity = int(item["quantity"])
         unit_price = Decimal(str(item.get("unit_price") or product.unit_price))
+        if quantity <= 0:
+            raise ValidationError("La cantidad del pedido debe ser mayor que cero.")
+        if unit_price < 0:
+            raise ValidationError("El precio unitario no puede ser negativo.")
 
         adjust_stock(product, quantity)
 
@@ -72,23 +78,33 @@ def create_purchase_order(data):
 
 def update_purchase_order(order_id, data):
     order = PurchaseOrder.objects.get(id=order_id)
-
-    for item in order.items:
-        product = Product.objects.get(id=item["product_id"])
-        adjust_stock(product, -int(item["quantity"]))
-
     supplier = Supplier.objects.get(id=data["supplier_id"])
     normalized_items = []
     total_amount = Decimal("0")
+    resolved_items = []
+
+    if not data.get("items"):
+        raise ValidationError("El pedido debe incluir al menos una línea de producto.")
 
     for item in data["items"]:
         if item.get("product_id"):
             product = Product.objects.get(id=item["product_id"])
         else:
-            product = Product.objects.get(name__iexact=item["product_name"])
+            product = get_product_document_by_name(item["product_name"])
 
         quantity = int(item["quantity"])
         unit_price = Decimal(str(item.get("unit_price") or product.unit_price))
+        if quantity <= 0:
+            raise ValidationError("La cantidad del pedido debe ser mayor que cero.")
+        if unit_price < 0:
+            raise ValidationError("El precio unitario no puede ser negativo.")
+        resolved_items.append((product, quantity, unit_price))
+
+    for item in order.items:
+        product = Product.objects.get(id=item["product_id"])
+        adjust_stock(product, -int(item["quantity"]))
+
+    for product, quantity, unit_price in resolved_items:
         adjust_stock(product, quantity)
 
         normalized_item = {
