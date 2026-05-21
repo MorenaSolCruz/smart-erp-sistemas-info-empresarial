@@ -13,8 +13,11 @@ ALLOWED_INTENTS = {
     "fallback",
     "list_products",
     "create_product",
+    "add_product_stock",
     "update_product",
     "delete_product",
+    "delete_all_products",
+    "get_product_stock",
     "list_suppliers",
     "create_supplier",
     "update_supplier",
@@ -55,34 +58,48 @@ RESPONSE_SCHEMA = {
 
 
 SYSTEM_PROMPT = """
-Eres el clasificador de intenciones de un prototipo ERP conversacional.
+Eres Maja, el clasificador de intenciones de un prototipo ERP conversacional.
 Tu unica salida debe ser JSON valido con esta forma:
 {"intent": "...", "reply": "...", "data": {...}}
 
 No ejecutes operaciones por tu cuenta. Solo interpreta el mensaje del usuario.
 El backend ejecutara la operacion indicada.
+Tu trabajo es entender lenguaje natural aunque el usuario escriba con faltas,
+sin tildes, con palabras incompletas o en orden distinto.
 
 Intenciones permitidas:
 - help
 - confirmation_required
 - missing_data
 - fallback
-- list_products, create_product, update_product, delete_product
+- list_products, create_product, add_product_stock, update_product, delete_product, delete_all_products
+- get_product_stock para preguntas como "cuantos monitores tengo" o "stock de Filtro HEPA"
 - list_suppliers, create_supplier, update_supplier, delete_supplier
 - list_purchase_orders, create_purchase_order, update_purchase_order, delete_purchase_order
 - list_waste, create_waste, update_waste, delete_waste
 - show_statistics
 
 Reglas de seguridad:
-- Para eliminar productos, proveedores, pedidos o desechos, si el mensaje no empieza con "confirma",
-  usa confirmation_required.
+- Para eliminar un producto, proveedor, pedido o desecho concreto, usa delete_* directamente.
+- Solo pide confirmation_required si el usuario quiere eliminar todo el inventario, todo el almacen,
+  todos los productos o todos los registros de productos.
 - Si faltan campos obligatorios, usa missing_data.
 - Si la intencion no es clara, usa fallback.
+- Si el usuario pregunta que puedes hacer, ejemplos, ayuda, comandos o capacidades, usa help.
+- Si pregunta "que productos tengo", "que hay en inventario", "objetos en stock", usa list_products.
+- Si pregunta "cuantos monitores tengo", "stock de tablets", "cantidad de telefono", usa get_product_stock.
+- Si dice "agrega", "añade", "mete", "introduce", "registra" un producto con unidades/precio,
+  interpreta create_product o add_product_stock segun corresponda.
+- Si da precio y unidades para un producto nuevo, usa create_product.
+- Si solo da unidades para un producto, usa add_product_stock.
 
 Campos esperados por intencion:
 - create_product: data.name, data.stock, data.unit_price. Opcionales: description, category, minimum_stock.
+- add_product_stock: data.name, data.quantity. Si el producto no existe, el backend puede crearlo con precio 0.
 - update_product: data.name y al menos uno de new_name, stock, unit_price, category, minimum_stock.
 - delete_product: data.name.
+- delete_all_products: data debe ser {}.
+- get_product_stock: data.name.
 - create_supplier: data.name, data.contact_email. Opcionales: phone, address, products_supplied.
 - update_supplier: data.name y al menos uno de new_name, contact_email, phone, address.
 - delete_supplier: data.name.
@@ -96,6 +113,18 @@ Campos esperados por intencion:
 
 Normaliza nombres propios de productos y proveedores con mayusculas profesionales.
 Responde siempre en espanol profesional y breve.
+
+Ejemplos de interpretacion:
+- "agrega televisor con precio 300 y 5 unidades" -> create_product con name Televisor, stock 5, unit_price 300.
+- "mete 10 ratones al inventario" -> add_product_stock con name Ratones, quantity 10.
+- "cuantos monitores tengo?" -> get_product_stock con name Monitores.
+- "que hay en el inventario?" -> list_products.
+- "quiero ver proveedores" -> list_suppliers.
+- "haz un pedido a ClimaSur de 8 filtros HEPA" -> create_purchase_order.
+- "borra el producto Tablet" -> delete_product.
+- "elimina telefono" -> delete_product con name Telefono.
+- "elimina todo el inventario" -> confirmation_required con data.pending_action delete_all_products.
+- "confirma eliminar todo el inventario" -> delete_all_products.
 """.strip()
 
 
@@ -172,6 +201,22 @@ def product_payload(match):
     }
 
 
+def integer_from_text(value):
+    if value is None:
+        return None
+    return int(re.search(r"\d+", value).group())
+
+
+def compact_product_name(value):
+    value = re.sub(
+        r"\b(y|con|de|del|al|a|el|la|los|las|un|una|unas|unos|producto|productos|precio|precios|stock|unidades|unidad|inventario|cuesta|vale)\b",
+        " ",
+        value,
+    )
+    value = re.sub(r"\d+(?:[.,]\d+)?", " ", value)
+    return " ".join(value.split()).strip()
+
+
 class MockLLMProvider(BaseLLMProvider):
     name = "mock"
 
@@ -186,27 +231,32 @@ class MockLLMProvider(BaseLLMProvider):
             return {
                 "intent": "help",
                 "reply": (
-                    "Puedo operar el ERP por lenguaje natural. Ejemplos: "
-                    "lista productos; crea un producto llamado Filtro HEPA con stock 20 y precio 35; "
-                    "actualiza el producto Filtro HEPA con stock 30 y precio 40; "
-                    "registra un proveedor llamado ClimaSur con email contacto@climasur.com; "
-                    "crea un pedido al proveedor ClimaSur de 10 unidades de Filtro HEPA; "
-                    "registra un desecho de 3 unidades de Filtro HEPA por caducidad; "
-                    "muestrame estadisticas. Para borrar, escribe confirma eliminar ..."
+                    "Puedo gestionar el ERP por lenguaje natural. Puedes pedirme: "
+                    "ver inventario, consultar stock, agregar productos, actualizar precios o unidades, "
+                    "registrar proveedores, crear pedidos, registrar desechos y mostrar estadísticas. "
+                    "Ejemplos: 'qué productos tengo', 'agrega televisor con precio 300 y 5 unidades', "
+                    "'cuántos monitores tengo', 'registra un proveedor llamado TecnoSur con email contacto@tecnosur.com'. "
+                    "Para borrar un registro concreto, pídemelo directamente. Si quieres eliminar todo el inventario, te pediré confirmación."
                 ),
             }
 
-        if self._is_delete_without_confirmation(lowered):
+        dangerous_delete = self._parse_dangerous_inventory_delete(lowered)
+        if dangerous_delete:
+            return dangerous_delete
+
+        if self._is_confirmed_inventory_delete(lowered):
+            return {"intent": "delete_all_products", "reply": "Elimino todo el inventario.", "data": {}}
+
+        if self._is_ambiguous_delete(lowered):
             return {
-                "intent": "confirmation_required",
-                "reply": "Para evitar bajas accidentales, confirma la operación escribiendo: confirma eliminar ...",
+                "intent": "missing_data",
+                "reply": "Indica qué registro quieres eliminar. Por ejemplo: elimina Telefono o elimina el desecho <id>.",
             }
 
-        list_intent = self._list_intent(lowered)
-        if list_intent:
-            return {"intent": list_intent, "reply": "Consulto la información solicitada."}
-
         for parser in [
+            self._parse_quick_inventory_add,
+            self._parse_flexible_create_product,
+            self._parse_product_stock_question,
             self._parse_create_product,
             self._parse_update_product,
             self._parse_delete_product,
@@ -224,6 +274,10 @@ class MockLLMProvider(BaseLLMProvider):
             if parsed:
                 return parsed
 
+        list_intent = self._list_intent(lowered)
+        if list_intent:
+            return {"intent": list_intent, "reply": "Consulto la información solicitada."}
+
         return {
             "intent": "fallback",
             "reply": (
@@ -238,18 +292,43 @@ class MockLLMProvider(BaseLLMProvider):
         return any(term in message for term in ["estadi", "perdida", "perdidas", "resumen"])
 
     def _is_help_request(self, message):
-        return message in ["ayuda", "help", "comandos", "que puedo hacer"] or "como uso" in message
-
-    def _is_delete_without_confirmation(self, message):
         return (
-            any(term in message for term in ["elimina", "eliminar", "borra", "borrar"])
-            and not message.startswith("confirma ")
+            message in ["ayuda", "help", "comandos", "que puedo hacer", "que puedes hacer", "que haces"]
+            or "como uso" in message
+            or "que cosas puedes" in message
+            or "capacidades" in message
         )
 
-    def _list_intent(self, message):
-        if not any(term in message for term in ["muestrame", "mostrar", "lista", "listar", "ver", "consulta"]):
+    def _parse_dangerous_inventory_delete(self, message):
+        if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vaciar", "limpiar"]):
             return None
-        if "producto" in message:
+        if not any(term in message for term in ["todo", "todos", "toda", "inventario", "almacen", "almacen", "productos"]):
+            return None
+        if message.startswith("confirma ") or message in ["si", "sí", "s"]:
+            return None
+        return {
+            "intent": "confirmation_required",
+            "reply": "Esta acción eliminará todo el inventario de productos. ¿Quieres eliminarlo? Responde sí o no.",
+            "data": {"pending_action": "delete_all_products"},
+        }
+
+    def _is_confirmed_inventory_delete(self, message):
+        return (
+            message.startswith("confirma ")
+            and any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vaciar", "limpiar"])
+            and any(term in message for term in ["todo", "todos", "toda", "inventario", "almacen", "productos"])
+        )
+
+    def _is_ambiguous_delete(self, message):
+        return message in ["elimina", "eliminar", "borra", "borrar", "confirma eliminar", "confirmar eliminar"]
+
+    def _list_intent(self, message):
+        if not any(
+            term in message
+            for term in ["muestrame", "mostrar", "lista", "listar", "ver", "consulta", "que", "cuales", "objetos", "inventario"]
+        ):
+            return None
+        if any(term in message for term in ["producto", "productos", "inventario", "stock", "objetos", "articulos"]):
             return "list_products"
         if "proveedor" in message:
             return "list_suppliers"
@@ -258,6 +337,88 @@ class MockLLMProvider(BaseLLMProvider):
         if "desecho" in message or "merma" in message:
             return "list_waste"
         return None
+
+    def _parse_product_stock_question(self, message):
+        match = re.search(
+            r"(?:cuantos|cuantas|cuanto|stock de|cantidad de|unidades de) (?P<name>.+?)(?: tengo| hay| quedan| en inventario)?\??$",
+            message,
+        )
+        if not match:
+            return None
+        name = re.sub(r"\b(tengo|hay|quedan|en inventario|producto|productos|unidades)\b", "", match.group("name")).strip()
+        if not name or name in ["producto", "productos", "inventario", "stock"]:
+            return None
+        return {
+            "intent": "get_product_stock",
+            "reply": f"Consulto las unidades disponibles de {display_name(name)}.",
+            "data": {"name": display_name(name)},
+        }
+
+    def _parse_quick_inventory_add(self, message):
+        match = re.search(
+            r"(?:introduce|introducir|meter|agregar|anadir|añadir|sumar|registrar) (?P<name>.+?) "
+            r"(?:en|al|a el)? ?inventario[, ]+(?P<stock>\d+)(?: unidades)?(?: concretamente)?$",
+            message,
+        )
+        if not match:
+            match = re.search(
+                r"(?:introduce|introducir|meter|agregar|anadir|añadir|sumar|registrar) (?P<stock>\d+) "
+                r"(?:unidades de )?(?P<name>.+?)(?: al inventario| en inventario)?$",
+                message,
+            )
+        if not match:
+            match = re.search(
+                r"(?:mete|pon|carga) (?P<stock>\d+) (?P<name>.+?)(?: al inventario| en inventario)?$",
+                message,
+            )
+        if not match:
+            return None
+        name = display_name(match.group("name"))
+        stock = int(match.group("stock"))
+        return {
+            "intent": "add_product_stock",
+            "reply": f"Registro {stock} unidades de {name} en el inventario.",
+            "data": {
+                "name": name,
+                "quantity": stock,
+            },
+        }
+
+    def _parse_flexible_create_product(self, message):
+        if not any(term in message for term in ["agrega", "agregar", "anade", "añade", "crear", "crea", "registra", "mete", "introduce"]):
+            return None
+        if not any(term in message for term in ["precio", "cuesta", "vale"]):
+            return None
+        if not any(term in message for term in ["unidad", "unidades", "stock", "cantidad"]):
+            return None
+
+        price_match = re.search(r"(?:precio|precios|cuesta|vale)(?: de)? (?P<price>\d+(?:[.,]\d+)?)", message)
+        stock_match = re.search(r"(?P<stock>\d+)\s*(?:unidades|unidad|uds|stock)", message)
+        if not stock_match:
+            stock_match = re.search(r"(?:stock|cantidad)(?: de)? (?P<stock>\d+)", message)
+        if not price_match or not stock_match:
+            return None
+
+        name_section = message
+        name_section = re.sub(r"^(?:agrega|agregar|anade|añade|crear|crea|registra|mete|introduce)\s+", "", name_section)
+        name = compact_product_name(name_section)
+        if not name:
+            return None
+
+        stock = integer_from_text(stock_match.group("stock"))
+        price = decimal_value(price_match.group("price"))
+        return {
+            "intent": "create_product",
+            "reply": f"Registro {display_name(name)} en el inventario.",
+            "data": {
+                "name": display_name(name),
+                "stock": stock,
+                "unit_price": price,
+                "description": "",
+                "category": "Inventario",
+                "minimum_stock": 0,
+            },
+        }
 
     def _parse_create_product(self, message):
         match = re.search(
@@ -319,10 +480,14 @@ class MockLLMProvider(BaseLLMProvider):
         return {"intent": "update_product", "reply": f"Actualizo el producto {data['name']}.", "data": data}
 
     def _parse_delete_product(self, message):
-        match = re.search(r"confirma (?:elimina|eliminar|borra|borrar) (?:el )?producto (?P<name>.+)$", message)
+        if any(term in message for term in ["proveedor", "pedido", "orden", "desecho", "merma"]):
+            return None
+        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el |la )?(?:producto )?(?P<name>.+)$", message)
         if not match:
             return None
         name = display_name(match.group("name"))
+        if normalize_text(name) in ["todo", "todos", "toda", "inventario", "almacen", "productos"]:
+            return None
         return {"intent": "delete_product", "reply": f"Elimino el producto {name}.", "data": {"name": name}}
 
     def _parse_create_supplier(self, message):
@@ -381,7 +546,7 @@ class MockLLMProvider(BaseLLMProvider):
         return {"intent": "update_supplier", "reply": f"Actualizo el proveedor {data['name']}.", "data": data}
 
     def _parse_delete_supplier(self, message):
-        match = re.search(r"confirma (?:elimina|eliminar|borra|borrar) (?:el )?proveedor (?P<name>.+)$", message)
+        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el )?proveedor (?P<name>.+)$", message)
         if not match:
             return None
         name = display_name(match.group("name"))
@@ -432,7 +597,7 @@ class MockLLMProvider(BaseLLMProvider):
         }
 
     def _parse_delete_purchase_order(self, message):
-        match = re.search(r"confirma (?:elimina|eliminar|borra|borrar) (?:el )?pedido (?P<id>[a-f0-9]{24})", message)
+        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el )?pedido (?P<id>[a-f0-9]{24})", message)
         if not match:
             return None
         return {"intent": "delete_purchase_order", "reply": "Elimino el pedido indicado.", "data": {"id": clean_identifier(match.group("id"))}}
@@ -477,7 +642,7 @@ class MockLLMProvider(BaseLLMProvider):
         }
 
     def _parse_delete_waste(self, message):
-        match = re.search(r"confirma (?:elimina|eliminar|borra|borrar) (?:el )?desecho (?P<id>[a-f0-9]{24})", message)
+        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el )?desecho (?P<id>[a-f0-9]{24})", message)
         if not match:
             return None
         return {"intent": "delete_waste", "reply": "Elimino el desecho indicado.", "data": {"id": clean_identifier(match.group("id"))}}
@@ -526,12 +691,15 @@ class OpenAIProvider(BaseLLMProvider):
 class GeminiProvider(BaseLLMProvider):
     name = "gemini"
 
+    def __init__(self, model=None):
+        self.model = model
+
     def generate_response(self, user_message, context):
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             return fallback_result("Gemini", user_message, context, "sin clave Gemini")
 
-        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        model = self.model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         payload = {
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
@@ -610,10 +778,18 @@ class LocalLLMProvider(BaseLLMProvider):
 
 def get_provider(provider_name=None):
     selected = (provider_name or os.getenv("DEFAULT_LLM_PROVIDER", "mock")).lower()
+    gemini_models = {
+        "gemini": "gemini-2.5-flash",
+        "gemini-2.5-flash": "gemini-2.5-flash",
+        "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+        "gemini-2.0-flash": "gemini-2.0-flash",
+    }
+    if selected in gemini_models:
+        return GeminiProvider(model=gemini_models[selected])
+
     providers = {
         "mock": MockLLMProvider(),
         "openai": OpenAIProvider(),
-        "gemini": GeminiProvider(),
         "claude": ClaudeProvider(),
         "local": LocalLLMProvider(),
     }

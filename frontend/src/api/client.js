@@ -25,3 +25,27 @@ export async function getStatistics() {
   return response.json();
 }
 
+async function getResource(path, errorMessage) {
+  const response = await fetch(`${API_BASE_URL}${path}`);
+  if (!response.ok) {
+    throw new Error(errorMessage);
+  }
+  return response.json();
+}
+
+export function getProducts() {
+  return getResource("/products/", "No se pudo actualizar el inventario.");
+}
+
+export function getSuppliers() {
+  return getResource("/suppliers/", "No se pudieron actualizar los proveedores.");
+}
+
+export function getPurchaseOrders() {
+  return getResource("/purchase-orders/", "No se pudieron actualizar los pedidos.");
+}
+
+export function getWasteRecords() {
+  return getResource("/waste/", "No se pudieron actualizar los desechos.");
+}
+

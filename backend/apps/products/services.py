@@ -6,6 +6,15 @@ from mongoengine.errors import DoesNotExist, NotUniqueError, ValidationError
 from apps.products.models import Product
 
 
+def normalize_lookup(value):
+    return " ".join(value.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").split())
+
+
+def singular_tokens(value):
+    tokens = normalize_lookup(value).split()
+    return [token[:-1] if token.endswith("s") and len(token) > 3 else token for token in tokens]
+
+
 def serialize_product(product):
     return {
         "id": str(product.id),
@@ -37,7 +46,17 @@ def get_product_document_by_name(name):
 
     matches = list(Product.objects(name__iexact=name).limit(2))
     if not matches:
-        raise DoesNotExist("Producto no encontrado.")
+        query_tokens = singular_tokens(name)
+        fuzzy_matches = []
+        for product in Product.objects:
+            product_tokens = singular_tokens(product.name)
+            if all(any(query_token in product_token or product_token in query_token for product_token in product_tokens) for query_token in query_tokens):
+                fuzzy_matches.append(product)
+                if len(fuzzy_matches) > 1:
+                    break
+        if not fuzzy_matches:
+            raise DoesNotExist("Producto no encontrado.")
+        matches = fuzzy_matches
     if len(matches) > 1:
         raise ValidationError("Hay varios productos con nombres muy parecidos. Usa el nombre exacto que aparece al listar productos.")
     return matches[0]
@@ -97,6 +116,12 @@ def delete_product(product_id):
 
     product.delete()
     return {"deleted": True, "id": product_id}
+
+
+def clear_products_inventory():
+    count = Product.objects.count()
+    Product.objects.delete()
+    return {"deleted": True, "deleted_count": count}
 
 
 def adjust_stock(product, quantity_delta):

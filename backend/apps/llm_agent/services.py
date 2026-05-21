@@ -1,7 +1,7 @@
 from mongoengine.errors import DoesNotExist, NotUniqueError, ValidationError
 
 from apps.llm_agent.providers import get_provider
-from apps.products.services import create_product, delete_product, get_product_document_by_name, list_products, update_product
+from apps.products.services import clear_products_inventory, create_product, delete_product, get_product_document_by_name, list_products, update_product
 from apps.purchase_orders.services import (
     create_purchase_order,
     delete_purchase_order,
@@ -30,14 +30,42 @@ def execute_agent_action(message, provider_name=None):
             return build_agent_response(provider.name, intent, result["reply"], None, provider_status=provider_status)
 
         if intent in ["confirmation_required", "missing_data"]:
-            return build_agent_response(provider.name, intent, result["reply"], None, success=False, provider_status=provider_status)
+            return build_agent_response(provider.name, intent, result["reply"], result.get("data"), success=False, provider_status=provider_status)
 
         if intent == "list_products":
             data = list_products()
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
 
+        if intent == "get_product_stock":
+            product = get_product_document_by_name(result["data"]["name"])
+            data = {
+                "name": product.name,
+                "stock": product.stock,
+                "minimum_stock": product.minimum_stock,
+                "unit_price": float(product.unit_price),
+            }
+            reply = f"Tienes {product.stock} unidad(es) de {product.name} en el inventario."
+            return build_agent_response(provider.name, intent, reply, data, provider_status=provider_status)
+
         if intent == "create_product":
             data = create_product(result["data"])
+            return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
+
+        if intent == "add_product_stock":
+            try:
+                product = get_product_document_by_name(result["data"]["name"])
+                data = update_product(str(product.id), {"stock": product.stock + int(result["data"]["quantity"])})
+            except DoesNotExist:
+                data = create_product(
+                    {
+                        "name": result["data"]["name"],
+                        "stock": int(result["data"]["quantity"]),
+                        "unit_price": 0,
+                        "description": "",
+                        "category": "Inventario",
+                        "minimum_stock": 0,
+                    }
+                )
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
 
         if intent == "update_product":
@@ -51,6 +79,10 @@ def execute_agent_action(message, provider_name=None):
         if intent == "delete_product":
             product = get_product_document_by_name(result["data"]["name"])
             data = delete_product(str(product.id))
+            return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
+
+        if intent == "delete_all_products":
+            data = clear_products_inventory()
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
 
         if intent == "list_suppliers":
@@ -169,9 +201,15 @@ def professional_reply(action, fallback_reply, data):
     if action in ["help", "confirmation_required", "missing_data"]:
         return fallback_reply
 
+    if action == "get_product_stock":
+        return fallback_reply
+
     if action.startswith("list_"):
         total = len(data) if isinstance(data, list) else 0
         return f"Consulta realizada correctamente. Se han encontrado {total} registro(s)."
+
+    if action == "add_product_stock":
+        return "Inventario actualizado correctamente. Las unidades quedan reflejadas en el panel en vivo."
 
     if action.startswith("create_"):
         return "Registro creado correctamente. La información queda disponible para nuevas consultas desde el chat."

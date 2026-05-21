@@ -1,22 +1,33 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { postAgentMessage } from "../api/client";
+import {
+  getProducts,
+  getPurchaseOrders,
+  getStatistics,
+  getSuppliers,
+  getWasteRecords,
+  postAgentMessage,
+} from "../api/client";
 import ChatMessage from "../components/ChatMessage";
 import DataPanel from "../components/DataPanel";
 
 const initialMessages = [
   {
     role: "assistant",
-    content: "Consola lista. Indica la operación ERP que necesitas realizar.",
-    meta: "Entrada por lenguaje natural | Entorno local",
+    content:
+      "Hola, soy Maja. Puedo ayudarte a gestionar el ERP por conversación. Por ejemplo: 'qué productos tengo', 'cuántos monitores tengo', 'introduce 23 unidades de memoria ram al inventario', 'registra un proveedor llamado TecnoSur con email contacto@tecnosur.com' o 'muéstrame estadísticas'.",
+    meta: "Asistente operativo | Control por conversación",
   },
 ];
 
 const actionLabels = {
   list_products: "Consulta de productos",
   create_product: "Alta de producto",
+  add_product_stock: "Entrada de inventario",
+  get_product_stock: "Consulta de stock",
   update_product: "Actualización de producto",
   delete_product: "Baja de producto",
+  delete_all_products: "Baja completa de inventario",
   list_suppliers: "Consulta de proveedores",
   create_supplier: "Alta de proveedor",
   update_supplier: "Actualización de proveedor",
@@ -37,20 +48,28 @@ const actionLabels = {
 };
 
 const providerNotes = {
-  mock: "Parser local de pruebas.",
-  openai: "OpenAI API. Requiere OPENAI_API_KEY.",
-  gemini: "Gemini API. Requiere GEMINI_API_KEY.",
-  claude: "Claude API. Requiere ANTHROPIC_API_KEY.",
-  local: "Simulado hasta configurar LOCAL_LLM_URL.",
+  "gemini-2.5-flash": "Modelo equilibrado para operaciones del ERP.",
+  "gemini-2.5-flash-lite": "Modelo ligero para respuestas rápidas.",
+  "gemini-2.0-flash": "Modelo rápido de generación anterior.",
 };
 
 export default function ChatPage() {
-  const [provider, setProvider] = useState(import.meta.env.VITE_DEFAULT_LLM_PROVIDER || "mock");
+  const defaultGeminiModel = import.meta.env.VITE_DEFAULT_LLM_PROVIDER?.startsWith("gemini")
+    ? import.meta.env.VITE_DEFAULT_LLM_PROVIDER
+    : "gemini-2.5-flash";
+  const [provider, setProvider] = useState(defaultGeminiModel);
   const [messages, setMessages] = useState(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [resultData, setResultData] = useState(null);
+  const [panelTitle, setPanelTitle] = useState("Resumen operativo");
+  const [panelRefreshing, setPanelRefreshing] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("erp-theme") || "light");
+  const [pendingAction, setPendingAction] = useState(null);
+
+  useEffect(() => {
+    refreshPanel("show_statistics");
+  }, []);
 
   const toggleTheme = () => {
     setTheme((currentTheme) => {
@@ -58,6 +77,48 @@ export default function ChatPage() {
       localStorage.setItem("erp-theme", nextTheme);
       return nextTheme;
     });
+  };
+
+  const refreshPanel = async (action) => {
+    const dashboardByAction = {
+      list_products: ["Inventario actualizado", getProducts],
+      create_product: ["Inventario actualizado", getProducts],
+      add_product_stock: ["Inventario en vivo", getProducts],
+      update_product: ["Inventario actualizado", getProducts],
+      delete_product: ["Inventario actualizado", getProducts],
+      delete_all_products: ["Inventario actualizado", getProducts],
+      get_product_stock: ["Inventario en vivo", getProducts],
+      list_suppliers: ["Proveedores actualizados", getSuppliers],
+      create_supplier: ["Proveedores actualizados", getSuppliers],
+      update_supplier: ["Proveedores actualizados", getSuppliers],
+      delete_supplier: ["Proveedores actualizados", getSuppliers],
+      list_purchase_orders: ["Pedidos actualizados", getPurchaseOrders],
+      create_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
+      update_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
+      delete_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
+      list_waste: ["Desechos actualizados", getWasteRecords],
+      create_waste: ["Desechos actualizados", getWasteRecords],
+      update_waste: ["Desechos actualizados", getWasteRecords],
+      delete_waste: ["Desechos actualizados", getWasteRecords],
+      show_statistics: ["Resumen operativo", getStatistics],
+    };
+
+    const panel = dashboardByAction[action];
+    if (!panel) {
+      return;
+    }
+
+    const [nextTitle, loader] = panel;
+    setPanelRefreshing(true);
+    try {
+      const freshData = await loader();
+      setResultData(freshData);
+      setPanelTitle(nextTitle);
+    } catch {
+      // The chat response still remains available if the live panel refresh fails.
+    } finally {
+      setPanelRefreshing(false);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -72,9 +133,33 @@ export default function ChatPage() {
     setLoading(true);
 
     try {
-      const response = await postAgentMessage({ message: userMessage, provider });
+      const normalizedMessage = userMessage.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (pendingAction === "delete_all_products" && ["no", "n", "cancelar"].includes(normalizedMessage)) {
+        setPendingAction(null);
+        setMessages((current) => [
+          ...current,
+          {
+            role: "assistant",
+            content: "Operación cancelada. El inventario se mantiene sin cambios.",
+            meta: "Cancelado | Baja completa de inventario",
+          },
+        ]);
+        return;
+      }
+
+      const outgoingMessage =
+        pendingAction === "delete_all_products" && ["si", "s", "yes"].includes(normalizedMessage)
+          ? "confirma eliminar todo el inventario"
+          : userMessage;
+
+      const response = await postAgentMessage({ message: outgoingMessage, provider });
       const actionLabel = actionLabels[response.action] || "Operación ERP";
       const providerDetail = response.provider_status ? ` | ${response.provider_status}` : "";
+      if (response.action === "confirmation_required" && response.data?.pending_action) {
+        setPendingAction(response.data.pending_action);
+      } else {
+        setPendingAction(null);
+      }
       setMessages((current) => [
         ...current,
         {
@@ -83,7 +168,10 @@ export default function ChatPage() {
           meta: `${response.success ? "Completado" : "Revisar"} | ${actionLabel} | Proveedor ${response.provider}${providerDetail}`,
         },
       ]);
-      setResultData(response.data);
+      await refreshPanel(response.action);
+      if (!response.action?.startsWith("list_") && response.action !== "show_statistics" && response.data) {
+        setResultData((currentData) => currentData || response.data);
+      }
     } catch (error) {
       setMessages((current) => [
         ...current,
@@ -109,16 +197,21 @@ export default function ChatPage() {
     <main className={`layout theme-${theme}`}>
       <section className="app-shell">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">ERP Conversacional</p>
-            <h1>Consola de operaciones</h1>
+          <div className="brand-lockup">
+            <div className="brand-mark" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+            <div>
+              <p className="eyebrow">Asistente de inventario</p>
+              <h1>Maja ERP</h1>
+            </div>
           </div>
 
-          <div className="system-strip" aria-label="Estado del sistema">
-            <span>API local</span>
-            <span>MongoDB</span>
-            <span>CRUD por LLM</span>
-          </div>
+          <p className="topbar-copy">
+            Todo se gestiona por chat, como una conversación natural con el asistente.
+          </p>
 
           <div className="topbar-controls">
             <button
@@ -132,16 +225,15 @@ export default function ChatPage() {
             </button>
 
             <label className="provider-box">
-              <span>Proveedor LLM</span>
+              <span>Modelo Gemini</span>
               <select value={provider} onChange={(event) => setProvider(event.target.value)}>
-                <option value="mock">Mock</option>
-                <option value="openai">OpenAI</option>
-                <option value="gemini">Gemini</option>
-                <option value="claude">Claude</option>
-                <option value="local">Local simulado</option>
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
               </select>
               <small>{providerNotes[provider]}</small>
             </label>
+
           </div>
         </header>
 
@@ -149,8 +241,8 @@ export default function ChatPage() {
           <section className="conversation-panel">
             <div className="panel-heading">
               <div>
-                <p className="eyebrow">Entrada única</p>
-                <h2>Chat ERP</h2>
+                <p className="eyebrow">Chat operativo</p>
+                <h2>Gestiona el almacén por conversación</h2>
               </div>
               <div className={`status-dot ${loading ? "status-busy" : ""}`}>
                 {loading ? "Procesando" : "Operativo"}
@@ -166,15 +258,20 @@ export default function ChatPage() {
                   meta={message.meta}
                 />
               ))}
+              {loading ? <ChatMessage role="assistant" thinking meta="Analizando orden y consultando el ERP" /> : null}
             </div>
 
             <form className="composer" onSubmit={handleSubmit}>
-              <textarea
-                rows="2"
+              <label className="composer-label" htmlFor="jarvis-order">
+                Enviar orden a Maja
+              </label>
+              <input
+                id="jarvis-order"
+                type="text"
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={handleComposerKeyDown}
-                placeholder="Ejemplo: crea un producto llamado Filtro HEPA con stock 20 y precio 35"
+                placeholder="Escribe una orden para Maja..."
               />
               <button type="submit" disabled={loading}>
                 {loading ? "Procesando..." : "Enviar"}
@@ -186,10 +283,11 @@ export default function ChatPage() {
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Salida</p>
-                <h2>Datos devueltos</h2>
+                <h2>{panelTitle}</h2>
               </div>
+              {panelRefreshing ? <span className="panel-sync">Actualizando</span> : null}
             </div>
-            <DataPanel data={resultData} />
+            <DataPanel data={resultData} title={panelTitle} isRefreshing={panelRefreshing} />
           </aside>
         </div>
       </section>
