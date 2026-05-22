@@ -15,8 +15,8 @@ const initialMessages = [
   {
     role: "assistant",
     content:
-      "Hola, soy Maja. Puedo ayudarte a gestionar el ERP por conversación. Por ejemplo: 'qué productos tengo', 'cuántos monitores tengo', 'introduce 23 unidades de memoria ram al inventario', 'registra un proveedor llamado TecnoSur con email contacto@tecnosur.com' o 'muéstrame estadísticas'.",
-    meta: "Asistente operativo | Control por conversación",
+      "Hola, soy Maja. Puedo ayudarte a gestionar el ERP por conversacion. Por ejemplo: 'que productos tengo', 'cuantos monitores tengo', 'introduce 23 unidades de memoria ram al inventario', 'registra un proveedor llamado TecnoSur con email contacto@tecnosur.com', 'muestrame estadisticas' o 'pon modo oscuro'.",
+    meta: "Asistente operativo | Control por conversacion",
   },
 ];
 
@@ -25,33 +25,63 @@ const actionLabels = {
   create_product: "Alta de producto",
   add_product_stock: "Entrada de inventario",
   get_product_stock: "Consulta de stock",
-  update_product: "Actualización de producto",
+  update_product: "Actualizacion de producto",
   delete_product: "Baja de producto",
   delete_all_products: "Baja completa de inventario",
   list_suppliers: "Consulta de proveedores",
   create_supplier: "Alta de proveedor",
-  update_supplier: "Actualización de proveedor",
+  update_supplier: "Actualizacion de proveedor",
   delete_supplier: "Baja de proveedor",
   list_purchase_orders: "Consulta de pedidos",
   create_purchase_order: "Alta de pedido",
-  update_purchase_order: "Actualización de pedido",
+  update_purchase_order: "Actualizacion de pedido",
   delete_purchase_order: "Baja de pedido",
   list_waste: "Consulta de desechos",
   create_waste: "Registro de desecho",
-  update_waste: "Actualización de desecho",
+  update_waste: "Actualizacion de desecho",
   delete_waste: "Baja de desecho",
-  show_statistics: "Análisis estadístico",
+  show_statistics: "Analisis estadistico",
+  show_audit_history: "Trazabilidad",
+  configure_auto_replenishment: "Reposicion automatica",
   help: "Ayuda operativa",
-  confirmation_required: "Confirmación requerida",
+  confirmation_required: "Confirmacion requerida",
   missing_data: "Datos incompletos",
-  fallback: "Sin acción ejecutada",
+  fallback: "Sin accion ejecutada",
 };
 
 const providerNotes = {
   "gemini-2.5-flash": "Modelo equilibrado para operaciones del ERP.",
-  "gemini-2.5-flash-lite": "Modelo ligero para respuestas rápidas.",
-  "gemini-2.0-flash": "Modelo rápido de generación anterior.",
+  "gemini-2.5-flash-lite": "Modelo ligero para respuestas rapidas.",
+  "gemini-2.0-flash": "Modelo rapido de generacion anterior.",
 };
+
+function normalizeMessage(message) {
+  return message.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function detectThemeCommand(message) {
+  const normalized = normalizeMessage(message);
+  const wantsThemeChange = ["modo", "tema", "theme", "oscuro", "claro", "dark", "light"].some((term) =>
+    normalized.includes(term),
+  );
+  const hasActionVerb = ["pon", "cambia", "cambiar", "activa", "activar", "usa"].some((term) =>
+    normalized.includes(term),
+  );
+
+  if (!wantsThemeChange || !hasActionVerb) {
+    return null;
+  }
+
+  if (["oscuro", "dark"].some((term) => normalized.includes(term))) {
+    return "dark";
+  }
+
+  if (["claro", "light"].some((term) => normalized.includes(term))) {
+    return "light";
+  }
+
+  return null;
+}
 
 export default function ChatPage() {
   const defaultGeminiModel = import.meta.env.VITE_DEFAULT_LLM_PROVIDER?.startsWith("gemini")
@@ -70,6 +100,11 @@ export default function ChatPage() {
   useEffect(() => {
     refreshPanel("show_statistics");
   }, []);
+
+  const applyTheme = (nextTheme) => {
+    setTheme(nextTheme);
+    localStorage.setItem("erp-theme", nextTheme);
+  };
 
   const toggleTheme = () => {
     setTheme((currentTheme) => {
@@ -133,14 +168,32 @@ export default function ChatPage() {
     setLoading(true);
 
     try {
-      const normalizedMessage = userMessage.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-      if (pendingAction === "delete_all_products" && ["no", "n", "cancelar"].includes(normalizedMessage)) {
+      const normalizedMessage = normalizeMessage(userMessage);
+      const requestedTheme = detectThemeCommand(userMessage);
+
+      if (requestedTheme) {
+        applyTheme(requestedTheme);
+        setMessages((current) => [
+          ...current,
+          {
+            role: "assistant",
+            content:
+              requestedTheme === "dark"
+                ? "Activo el modo oscuro en la interfaz."
+                : "Activo el modo claro en la interfaz.",
+            meta: "Completado | Cambio de tema | Interfaz",
+          },
+        ]);
+        return;
+      }
+
+      if (pendingAction && ["no", "n", "cancelar"].includes(normalizedMessage)) {
         setPendingAction(null);
         setMessages((current) => [
           ...current,
           {
             role: "assistant",
-            content: "Operación cancelada. El inventario se mantiene sin cambios.",
+            content: "Operacion cancelada. El inventario se mantiene sin cambios.",
             meta: "Cancelado | Baja completa de inventario",
           },
         ]);
@@ -148,18 +201,20 @@ export default function ChatPage() {
       }
 
       const outgoingMessage =
-        pendingAction === "delete_all_products" && ["si", "s", "yes"].includes(normalizedMessage)
-          ? "confirma eliminar todo el inventario"
+        pendingAction && ["si", "s", "yes"].includes(normalizedMessage)
+          ? pendingAction.confirmation_token || "confirma eliminar todo el inventario"
           : userMessage;
 
       const response = await postAgentMessage({ message: outgoingMessage, provider });
-      const actionLabel = actionLabels[response.action] || "Operación ERP";
+      const actionLabel = actionLabels[response.action] || "Operacion ERP";
       const providerDetail = response.provider_status ? ` | ${response.provider_status}` : "";
+
       if (response.action === "confirmation_required" && response.data?.pending_action) {
-        setPendingAction(response.data.pending_action);
+        setPendingAction(response.data);
       } else {
         setPendingAction(null);
       }
+
       setMessages((current) => [
         ...current,
         {
@@ -168,6 +223,7 @@ export default function ChatPage() {
           meta: `${response.success ? "Completado" : "Revisar"} | ${actionLabel} | Proveedor ${response.provider}${providerDetail}`,
         },
       ]);
+
       await refreshPanel(response.action);
       if (!response.action?.startsWith("list_") && response.action !== "show_statistics" && response.data) {
         setResultData((currentData) => currentData || response.data);
@@ -178,7 +234,7 @@ export default function ChatPage() {
         {
           role: "assistant",
           content: error.message,
-          meta: "Error al procesar la petición",
+          meta: "Error al procesar la peticion",
         },
       ]);
     } finally {
@@ -210,7 +266,7 @@ export default function ChatPage() {
           </div>
 
           <p className="topbar-copy">
-            Todo se gestiona por chat, como una conversación natural con el asistente.
+            Todo se gestiona por chat, como una conversacion natural con el asistente.
           </p>
 
           <div className="topbar-controls">
@@ -233,7 +289,6 @@ export default function ChatPage() {
               </select>
               <small>{providerNotes[provider]}</small>
             </label>
-
           </div>
         </header>
 
@@ -242,7 +297,7 @@ export default function ChatPage() {
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">Chat operativo</p>
-                <h2>Gestiona el almacén por conversación</h2>
+                <h2>Gestiona el almacen por conversacion</h2>
               </div>
               <div className={`status-dot ${loading ? "status-busy" : ""}`}>
                 {loading ? "Procesando" : "Operativo"}
@@ -294,4 +349,3 @@ export default function ChatPage() {
     </main>
   );
 }
-

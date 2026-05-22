@@ -17,10 +17,39 @@ def serialize_waste(record):
         "reason": record.reason,
         "date": record.date.isoformat() if record.date else None,
         "economic_loss": float(record.economic_loss),
+        "remaining_stock": record.product.stock,
+        "minimum_stock": record.product.minimum_stock,
     }
 
 
+def process_expired_products(reference_time=None):
+    reference_time = reference_time or datetime.utcnow()
+    created_records = []
+
+    expired_products = Product.objects(expiration_date__ne=None, expiration_date__lte=reference_time, stock__gt=0)
+    for product in expired_products:
+        quantity = int(product.stock)
+        if quantity <= 0:
+            continue
+
+        adjust_stock(product, -quantity)
+        economic_loss = Decimal(str(product.unit_price)) * quantity
+
+        record = WasteRecord(
+            product=product,
+            quantity=quantity,
+            reason="caducidad",
+            date=reference_time,
+            economic_loss=economic_loss,
+        )
+        record.save()
+        created_records.append(record)
+
+    return created_records
+
+
 def list_waste_records():
+    process_expired_products()
     return [serialize_waste(record) for record in WasteRecord.objects.order_by("-date")]
 
 

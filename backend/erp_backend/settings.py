@@ -22,6 +22,7 @@ INSTALLED_APPS = [
     "apps.purchase_orders",
     "apps.waste",
     "apps.statistics",
+    "apps.audit",
     "apps.llm_agent",
 ]
 

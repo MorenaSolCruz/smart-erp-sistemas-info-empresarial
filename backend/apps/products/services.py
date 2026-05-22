@@ -31,15 +31,24 @@ def serialize_product(product):
 
 
 def list_products():
+    from apps.waste.services import process_expired_products
+
+    process_expired_products()
     return [serialize_product(product) for product in Product.objects.order_by("name")]
 
 
 def get_product_by_id(product_id):
+    from apps.waste.services import process_expired_products
+
+    process_expired_products()
     product = Product.objects.get(id=product_id)
     return serialize_product(product)
 
 
 def get_product_document_by_name(name):
+    from apps.waste.services import process_expired_products
+
+    process_expired_products()
     exact_product = Product.objects(name=name).first()
     if exact_product:
         return exact_product

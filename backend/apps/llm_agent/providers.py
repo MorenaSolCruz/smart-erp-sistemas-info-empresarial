@@ -31,6 +31,8 @@ ALLOWED_INTENTS = {
     "update_waste",
     "delete_waste",
     "show_statistics",
+    "show_audit_history",
+    "configure_auto_replenishment",
 }
 
 
@@ -56,6 +58,8 @@ RESPONSE_SCHEMA = {
     "additionalProperties": False,
 }
 
+CONFIRMATION_PREFIX = "confirm_action::"
+
 
 SYSTEM_PROMPT = """
 Eres Maja, el clasificador de intenciones de un prototipo ERP conversacional.
@@ -78,6 +82,8 @@ Intenciones permitidas:
 - list_purchase_orders, create_purchase_order, update_purchase_order, delete_purchase_order
 - list_waste, create_waste, update_waste, delete_waste
 - show_statistics
+- show_audit_history para trazabilidad y auditoria
+- configure_auto_replenishment para activar o desactivar la reposicion automatica
 
 Reglas de seguridad:
 - Para eliminar un producto, proveedor, pedido o desecho concreto, usa delete_* directamente.
@@ -109,6 +115,8 @@ Campos esperados por intencion:
 - create_waste: data.product_name, data.quantity, data.reason. reason debe ser caducidad, producto dañado o ajuste manual.
 - update_waste: data.id, data.product_name, data.quantity, data.reason.
 - delete_waste: data.id.
+- show_audit_history: data.audit_scope, data.limit y segun el caso data.supplier_name.
+- configure_auto_replenishment: data.enabled con valor true o false.
 - list_* y show_statistics: data debe ser {}.
 
 Normaliza nombres propios de productos y proveedores con mayusculas profesionales.
@@ -125,6 +133,8 @@ Ejemplos de interpretacion:
 - "elimina telefono" -> delete_product con name Telefono.
 - "elimina todo el inventario" -> confirmation_required con data.pending_action delete_all_products.
 - "confirma eliminar todo el inventario" -> delete_all_products.
+- "muestrame las ultimas 10 acciones sobre este proveedor" -> show_audit_history.
+- "dime los ultimos 35 productos eliminados" -> show_audit_history.
 """.strip()
 
 
@@ -183,6 +193,30 @@ def normalize_llm_result(result):
     return {"intent": intent, "reply": reply, "data": data}
 
 
+def confirmation_token(intent, reply, data):
+    return f"{CONFIRMATION_PREFIX}{json.dumps({'intent': intent, 'reply': reply, 'data': data}, ensure_ascii=True)}"
+
+
+def confirmation_required_result(intent, reply, data, prompt):
+    return {
+        "intent": "confirmation_required",
+        "reply": prompt,
+        "data": {
+            "pending_action": intent,
+            "confirmation_token": confirmation_token(intent, reply, data),
+        },
+    }
+
+
+def parse_confirmation_token(message):
+    if not message.startswith(CONFIRMATION_PREFIX):
+        return None
+    payload = json.loads(message[len(CONFIRMATION_PREFIX) :])
+    result = normalize_llm_result(payload)
+    result["confirmed"] = True
+    return result
+
+
 def fallback_result(provider_name, user_message, context, reason):
     result = MockLLMProvider().generate_response(user_message, context)
     result["reply"] = f"{result['reply']} (fallback local: {reason})."
@@ -221,8 +255,18 @@ class MockLLMProvider(BaseLLMProvider):
     name = "mock"
 
     def generate_response(self, user_message, context):
+        self._context = context or {}
         raw_message = user_message.strip()
+        confirmed_action = parse_confirmation_token(raw_message)
+        if confirmed_action:
+            return confirmed_action
         lowered = normalize_text(raw_message)
+        auto_replenishment_request = self._parse_auto_replenishment_config(lowered)
+        if auto_replenishment_request:
+            return auto_replenishment_request
+        audit_request = self._parse_audit_history_request(lowered)
+        if audit_request:
+            return audit_request
 
         if self._is_statistics_request(lowered):
             return {"intent": "show_statistics", "reply": "Consulto las estadísticas del ERP."}
@@ -263,6 +307,7 @@ class MockLLMProvider(BaseLLMProvider):
             self._parse_create_supplier,
             self._parse_update_supplier,
             self._parse_delete_supplier,
+            self._parse_contextual_purchase_order,
             self._parse_create_purchase_order,
             self._parse_update_purchase_order,
             self._parse_delete_purchase_order,
@@ -298,6 +343,68 @@ class MockLLMProvider(BaseLLMProvider):
             or "que cosas puedes" in message
             or "capacidades" in message
         )
+
+    def _last_supplier_name(self):
+        return display_name((self._context or {}).get("last_supplier_name", "").strip()) if (self._context or {}).get("last_supplier_name") else None
+
+    def _parse_auto_replenishment_config(self, message):
+        if not any(term in message for term in ["reposicion", "reabastecimiento", "pedido automatico", "pedidos automaticos"]):
+            return None
+
+        if any(term in message for term in ["activa", "activar", "habilita", "habilitar", "enciende"]):
+            return {
+                "intent": "configure_auto_replenishment",
+                "reply": "Activo la reposicion automatica de pedidos por stock bajo.",
+                "data": {"enabled": True},
+            }
+
+        if any(term in message for term in ["desactiva", "desactivar", "deshabilita", "deshabilitar", "apaga"]):
+            return {
+                "intent": "configure_auto_replenishment",
+                "reply": "Desactivo la reposicion automatica de pedidos.",
+                "data": {"enabled": False},
+            }
+
+        return None
+
+    def _parse_audit_history_request(self, message):
+        if not any(term in message for term in ["accion", "acciones", "trazabilidad", "auditoria", "audit", "eliminad"]):
+            return None
+
+        limit_match = re.search(r"(?P<limit>\d+)", message)
+        limit = int(limit_match.group("limit")) if limit_match else 10
+
+        if "proveedor" in message:
+            if "este proveedor" in message:
+                supplier_name = self._last_supplier_name()
+                if not supplier_name:
+                    return {
+                        "intent": "missing_data",
+                        "reply": "No tengo un proveedor reciente en memoria. Indica el proveedor sobre el que quieres ver la trazabilidad.",
+                    }
+            else:
+                supplier_match = re.search(r"proveedor (?P<name>.+)$", message)
+                supplier_name = display_name(supplier_match.group("name")) if supplier_match else None
+                if not supplier_name:
+                    return {
+                        "intent": "missing_data",
+                        "reply": "Indica el proveedor sobre el que quieres consultar la trazabilidad.",
+                    }
+
+            return {
+                "intent": "show_audit_history",
+                "reply": f"Consulto la trazabilidad reciente del proveedor {supplier_name}.",
+                "data": {"audit_scope": "supplier", "supplier_name": supplier_name, "limit": limit},
+            }
+
+        if "producto" in message and any(term in message for term in ["eliminado", "eliminados", "borrado", "borrados"]):
+            return {
+                "intent": "show_audit_history",
+                "reply": "Consulto la trazabilidad de productos eliminados.",
+                "data": {"audit_scope": "deleted_products", "limit": limit},
+            }
+
+        return None
 
     def _parse_dangerous_inventory_delete(self, message):
         if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vaciar", "limpiar"]):
@@ -565,6 +672,34 @@ class MockLLMProvider(BaseLLMProvider):
         item = {"product_name": product, "quantity": int(match.group("quantity"))}
         if match.group("price"):
             item["unit_price"] = decimal_value(match.group("price"))
+        return {
+            "intent": "create_purchase_order",
+            "reply": f"Registro un pedido a {supplier}.",
+            "data": {"supplier_name": supplier, "items": [item]},
+        }
+
+        
+    def _parse_contextual_purchase_order(self, message):
+        match = re.search(
+            r"(?:haz|hacer|crea|crear|registra|registrar)(?:le)? un pedido "
+            r"de (?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+            message,
+        )
+        if not match:
+            return None
+
+        supplier = self._last_supplier_name()
+        if not supplier:
+            return {
+                "intent": "missing_data",
+                "reply": "No tengo un proveedor reciente en memoria. Indica el nombre del proveedor para crear el pedido.",
+            }
+
+        product = display_name(match.group("product"))
+        item = {"product_name": product, "quantity": int(match.group("quantity"))}
+        if match.group("price"):
+            item["unit_price"] = decimal_value(match.group("price"))
+
         return {
             "intent": "create_purchase_order",
             "reply": f"Registro un pedido a {supplier}.",

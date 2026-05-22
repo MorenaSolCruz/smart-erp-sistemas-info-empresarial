@@ -127,9 +127,26 @@ def update_purchase_order(order_id, data):
 
 def delete_purchase_order(order_id):
     order = PurchaseOrder.objects.get(id=order_id)
+    affected_products = []
+    supplier_name = order.supplier.name
+    supplier_id = str(order.supplier.id)
     for item in order.items:
         product = Product.objects.get(id=item["product_id"])
         adjust_stock(product, -int(item["quantity"]))
+        affected_products.append(
+            {
+                "product_id": str(product.id),
+                "product_name": product.name,
+                "stock": product.stock,
+                "minimum_stock": product.minimum_stock,
+            }
+        )
 
     order.delete()
-    return {"deleted": True, "id": order_id}
+    return {
+        "deleted": True,
+        "id": order_id,
+        "supplier_id": supplier_id,
+        "supplier_name": supplier_name,
+        "affected_products": affected_products,
+    }

@@ -17,7 +17,7 @@ function DonutChart({ title, rows, labelKey, valueKey }) {
     return (
       <section className="panel-card">
         <h3>{title}</h3>
-        <p>Sin datos todavía.</p>
+        <p>Sin datos todavia.</p>
       </section>
     );
   }
@@ -89,7 +89,7 @@ function ColumnChart({ title, rows, labelKey, valueKey }) {
     return (
       <section className="panel-card">
         <h3>{title}</h3>
-        <p>Sin datos todavía.</p>
+        <p>Sin datos todavia.</p>
       </section>
     );
   }
@@ -135,7 +135,7 @@ function DataTable({ title, rows }) {
     return (
       <section className="panel-card">
         <h3>{title}</h3>
-        <p>Sin datos todavía.</p>
+        <p>Sin datos todavia.</p>
       </section>
     );
   }
@@ -169,6 +169,15 @@ function DataTable({ title, rows }) {
     economic_loss: "Perdida economica",
     orders_count: "Pedidos",
     wasted_quantity: "Unidades desechadas",
+    expired_products_count: "Productos caducados",
+    expired_units: "Unidades caducadas",
+    expired_economic_loss: "Perdida por caducidad",
+    timestamp: "Fecha",
+    action_label: "Accion",
+    entity_type: "Tipo de entidad",
+    entity_name: "Entidad",
+    summary: "Resumen",
+    enabled: "Activo",
   };
   const formatValue = (value) => {
     if (Array.isArray(value)) {
@@ -233,28 +242,47 @@ function StatisticsDashboard({ data }) {
     (total, row) => total + Number(row.orders_count || 0),
     0,
   );
+  const expirationSummary = data.expiration_waste_summary || {};
 
   return (
     <div className="stats-dashboard">
       <div className="kpi-grid">
         <KpiCard label="Productos monitorizados" value={productsCount} tone="info" />
         <KpiCard label="Unidades desechadas" value={wastedUnits} tone="warning" />
-        <KpiCard label="Pérdida económica" value={economicLoss} tone="danger" />
+        <KpiCard label="Perdida economica" value={economicLoss} tone="danger" />
         <KpiCard label="Pedidos registrados" value={ordersCount} tone="success" />
+        <KpiCard label="Productos caducados" value={expirationSummary.expired_products_count || 0} tone="warning" />
+        <KpiCard label="Perdida por caducidad" value={expirationSummary.expired_economic_loss || 0} tone="danger" />
       </div>
 
       <div className="stats-charts">
         <DonutChart
-          title="Distribución de productos desechados"
+          title="Distribucion de productos desechados"
           rows={data.most_wasted_products}
           labelKey="product_name"
           valueKey="wasted_quantity"
         />
         <ColumnChart
-          title="Pérdidas económicas por motivo"
+          title="Perdidas economicas por motivo"
           rows={data.waste_economic_losses}
           labelKey="reason"
           valueKey="economic_loss"
+        />
+        <ColumnChart
+          title="Unidades desechadas por motivo"
+          rows={data.waste_quantities_by_reason}
+          labelKey="reason"
+          valueKey="quantity"
+        />
+        <DataTable
+          title="Resumen de caducidad automatica"
+          rows={[
+            {
+              expired_products_count: expirationSummary.expired_products_count || 0,
+              expired_units: expirationSummary.expired_units || 0,
+              expired_economic_loss: expirationSummary.expired_economic_loss || 0,
+            },
+          ]}
         />
       </div>
     </div>
@@ -266,7 +294,7 @@ export default function DataPanel({ data, title = "Resultados", isRefreshing = f
     return (
       <section className="panel-card empty-state">
         <h3>{title}</h3>
-        <p>Maja mostrará aquí los datos actualizados tras cada orden.</p>
+        <p>Maja mostrara aqui los datos actualizados tras cada orden.</p>
       </section>
     );
   }
@@ -324,8 +352,8 @@ function ProductLivePanel({ title, rows }) {
                 />
               </div>
               <div className="inventory-meta">
-                <span>Precio {formatNumber(product.unit_price)} €</span>
-                <span>Mínimo {formatNumber(product.minimum_stock)}</span>
+                <span>Precio {formatNumber(product.unit_price)} EUR</span>
+                <span>Minimo {formatNumber(product.minimum_stock)}</span>
               </div>
             </article>
           ))}
