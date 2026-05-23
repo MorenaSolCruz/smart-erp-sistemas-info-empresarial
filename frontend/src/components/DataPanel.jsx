@@ -12,6 +12,30 @@ function chartPercent(value, total) {
   return formatNumber((Number(value || 0) / (total || 1)) * 100);
 }
 
+function polarToCartesian(centerX, centerY, radius, angleInDegrees) {
+  const angleInRadians = ((angleInDegrees - 90) * Math.PI) / 180;
+  return {
+    x: centerX + radius * Math.cos(angleInRadians),
+    y: centerY + radius * Math.sin(angleInRadians),
+  };
+}
+
+function describeArc(x, y, radius, startAngle, endAngle) {
+  const start = polarToCartesian(x, y, radius, endAngle);
+  const end = polarToCartesian(x, y, radius, startAngle);
+  const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+  return ["M", start.x, start.y, "A", radius, radius, 0, largeArcFlag, 0, end.x, end.y].join(" ");
+}
+
+function shortLabel(value, maxLength = 14) {
+  const label = String(value ?? "");
+  return label.length > maxLength ? `${label.slice(0, maxLength - 1)}...` : label;
+}
+
+function chartPoint(x, y) {
+  return `${Number(x).toFixed(2)},${Number(y).toFixed(2)}`;
+}
+
 function DonutChart({ title, rows, labelKey, valueKey }) {
   if (!rows?.length) {
     return (
@@ -23,37 +47,49 @@ function DonutChart({ title, rows, labelKey, valueKey }) {
   }
 
   const totalValue = rows.reduce((total, row) => total + Number(row[valueKey] || 0), 0) || 1;
-  const radius = 43;
-  const circumference = 2 * Math.PI * radius;
-  let currentOffset = 0;
+  let currentAngle = 0;
 
   return (
-    <section className="panel-card chart-card donut-card">
-      <h3>{title}</h3>
+    <section className="panel-card chart-card donut-card advanced-chart">
+      <div className="chart-card-head">
+        <div>
+          <h3>{title}</h3>
+          <p>Participacion por producto</p>
+        </div>
+        <span>{formatNumber(totalValue)} uds.</span>
+      </div>
       <div className="donut-layout">
         <div className="donut-figure" aria-label={title}>
-          <svg viewBox="0 0 120 120" role="img">
-            <circle className="donut-track" cx="60" cy="60" r={radius} />
+          <svg viewBox="0 0 190 190" role="img">
+            <defs>
+              <filter id="donutGlow" x="-30%" y="-30%" width="160%" height="160%">
+                <feGaussianBlur stdDeviation="3" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <circle className="donut-track" cx="95" cy="95" r="62" />
             {rows.map((row, index) => {
               const value = Number(row[valueKey]) || 0;
-              const arc = (value / totalValue) * circumference;
-              const dashOffset = currentOffset;
-              currentOffset += arc;
+              const sweep = (value / totalValue) * 359.5;
+              const startAngle = currentAngle;
+              const endAngle = currentAngle + sweep;
+              currentAngle = endAngle;
               return (
-                <circle
+                <path
                   className="donut-segment"
                   key={`${row[labelKey]}-${index}`}
-                  cx="60"
-                  cy="60"
-                  r={radius}
+                  d={describeArc(95, 95, 62, startAngle, endAngle)}
                   stroke={chartColors[index % chartColors.length]}
-                  strokeDasharray={`${arc} ${circumference - arc}`}
-                  strokeDashoffset={-dashOffset}
+                  filter="url(#donutGlow)"
                 >
                   <title>{`${row[labelKey]}: ${formatNumber(value)} (${chartPercent(value, totalValue)}%)`}</title>
-                </circle>
+                </path>
               );
             })}
+            <circle className="donut-inner-ring" cx="95" cy="95" r="41" />
           </svg>
           <div className="donut-center">
             <strong>{formatNumber(totalValue)}</strong>
@@ -96,35 +132,74 @@ function ColumnChart({ title, rows, labelKey, valueKey }) {
 
   const maxValue = Math.max(...rows.map((row) => Number(row[valueKey]) || 0), 1);
   const totalValue = rows.reduce((total, row) => total + Number(row[valueKey] || 0), 0) || 1;
+  const chartWidth = 320;
+  const chartHeight = 220;
+  const left = 42;
+  const right = 18;
+  const top = 22;
+  const bottom = 42;
+  const plotWidth = chartWidth - left - right;
+  const plotHeight = chartHeight - top - bottom;
+  const slotWidth = plotWidth / rows.length;
+  const barWidth = Math.min(38, slotWidth * 0.52);
+  const ticks = [0, 0.25, 0.5, 0.75, 1];
 
   return (
-    <section className="panel-card chart-card column-card">
-      <h3>{title}</h3>
-      <div className="column-chart" aria-label={title}>
-        {rows.map((row, index) => {
-          const value = Number(row[valueKey]) || 0;
-          const height = Math.max((value / maxValue) * 100, 8);
-          return (
-            <div
-              className="column-item"
-              key={`${row[labelKey]}-${index}`}
-              data-tooltip={`${row[labelKey]}: ${formatNumber(value)} (${chartPercent(value, totalValue)}%)`}
-            >
-              <strong>{formatNumber(value)}</strong>
-              <div className="column-track">
-                <div
-                  className="column-fill"
-                  style={{
-                    height: `${height}%`,
-                    background: `linear-gradient(180deg, ${chartColors[(index + 2) % chartColors.length]}, ${chartColors[(index + 3) % chartColors.length]})`,
-                  }}
-                />
-              </div>
-              <span>{row[labelKey]}</span>
-              <small>{chartPercent(value, totalValue)}%</small>
-            </div>
-          );
-        })}
+    <section className="panel-card chart-card column-card advanced-chart">
+      <div className="chart-card-head">
+        <div>
+          <h3>{title}</h3>
+          <p>Comparativa por motivo</p>
+        </div>
+        <span>{formatNumber(totalValue)} total</span>
+      </div>
+      <div className="svg-chart-wrap">
+        <svg className="bar-svg" viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={title}>
+          <defs>
+            {rows.map((row, index) => (
+              <linearGradient id={`barGradient-${index}`} key={`barGradient-${index}`} x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stopColor={chartColors[(index + 2) % chartColors.length]} />
+                <stop offset="100%" stopColor={chartColors[(index + 3) % chartColors.length]} />
+              </linearGradient>
+            ))}
+          </defs>
+          {ticks.map((tick) => {
+            const y = top + plotHeight - tick * plotHeight;
+            return (
+              <g key={`tick-${tick}`}>
+                <line className="axis-grid" x1={left} x2={chartWidth - right} y1={y} y2={y} />
+                <text className="axis-label" x={left - 10} y={y + 4} textAnchor="end">
+                  {formatNumber(maxValue * tick)}
+                </text>
+              </g>
+            );
+          })}
+          <line className="axis-line" x1={left} x2={left} y1={top} y2={chartHeight - bottom} />
+          <line className="axis-line" x1={left} x2={chartWidth - right} y1={chartHeight - bottom} y2={chartHeight - bottom} />
+          {rows.map((row, index) => {
+            const value = Number(row[valueKey]) || 0;
+            const height = Math.max((value / maxValue) * plotHeight, 8);
+            const x = left + index * slotWidth + (slotWidth - barWidth) / 2;
+            const y = top + plotHeight - height;
+            return (
+              <g className="bar-group" key={`${row[labelKey]}-${index}`}>
+                <rect className="bar-hit" x={x - 8} y={top} width={barWidth + 16} height={plotHeight} rx="12">
+                  <title>{`${row[labelKey]}: ${formatNumber(value)} (${chartPercent(value, totalValue)}%)`}</title>
+                </rect>
+                <rect className="bar-column" x={x} y={y} width={barWidth} height={height} rx="13" fill={`url(#barGradient-${index})`} />
+                <text className="bar-value" x={x + barWidth / 2} y={y - 8} textAnchor="middle">
+                  {formatNumber(value)}
+                </text>
+                <text className="bar-label" x={x + barWidth / 2} y={chartHeight - 22} textAnchor="middle">
+                  {shortLabel(row[labelKey], 10)}
+                </text>
+                <text className="bar-percent" x={x + barWidth / 2} y={chartHeight - 8} textAnchor="middle">
+                  {chartPercent(value, totalValue)}%
+                </text>
+              </g>
+            );
+          })}
+        </svg>
       </div>
     </section>
   );
@@ -224,6 +299,119 @@ function KpiCard({ label, value, tone = "neutral" }) {
     <section className={`kpi-card kpi-${tone}`}>
       <span>{label}</span>
       <strong>{formatNumber(value)}</strong>
+      <i aria-hidden="true" />
+    </section>
+  );
+}
+
+function ParetoChart({ title, rows, labelKey, valueKey }) {
+  if (!rows?.length) {
+    return (
+      <section className="panel-card">
+        <h3>{title}</h3>
+        <p>Sin datos todavia.</p>
+      </section>
+    );
+  }
+
+  const sortedRows = [...rows].sort((a, b) => Number(b[valueKey] || 0) - Number(a[valueKey] || 0));
+  const maxValue = Math.max(...sortedRows.map((row) => Number(row[valueKey]) || 0), 1);
+  const totalValue = sortedRows.reduce((total, row) => total + Number(row[valueKey] || 0), 0) || 1;
+  const chartWidth = 360;
+  const chartHeight = 230;
+  const left = 44;
+  const right = 36;
+  const top = 24;
+  const bottom = 48;
+  const plotWidth = chartWidth - left - right;
+  const plotHeight = chartHeight - top - bottom;
+  const slotWidth = plotWidth / sortedRows.length;
+  const barWidth = Math.min(34, slotWidth * 0.48);
+  const ticks = [0, 0.25, 0.5, 0.75, 1];
+  let runningTotal = 0;
+  const linePoints = sortedRows.map((row, index) => {
+    runningTotal += Number(row[valueKey]) || 0;
+    const x = left + index * slotWidth + slotWidth / 2;
+    const y = top + plotHeight - (runningTotal / totalValue) * plotHeight;
+    return { x, y, percent: (runningTotal / totalValue) * 100 };
+  });
+  const areaPath = linePoints.length
+    ? `M ${chartPoint(linePoints[0].x, top + plotHeight)} L ${linePoints.map((point) => chartPoint(point.x, point.y)).join(" L ")} L ${chartPoint(linePoints[linePoints.length - 1].x, top + plotHeight)} Z`
+    : "";
+  const linePath = linePoints.length ? `M ${linePoints.map((point) => chartPoint(point.x, point.y)).join(" L ")}` : "";
+
+  return (
+    <section className="panel-card chart-card pareto-card advanced-chart">
+      <div className="chart-card-head">
+        <div>
+          <h3>{title}</h3>
+          <p>Barras de impacto y linea acumulada</p>
+        </div>
+        <span>{formatNumber(totalValue)} total</span>
+      </div>
+      <div className="svg-chart-wrap">
+        <svg className="pareto-svg" viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={title}>
+          <defs>
+            <linearGradient id="paretoArea" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#37d7ff" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="#37d7ff" stopOpacity="0.02" />
+            </linearGradient>
+            <linearGradient id="paretoBar" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#ff7ac8" />
+              <stop offset="100%" stopColor="#a78bfa" />
+            </linearGradient>
+          </defs>
+          {ticks.map((tick) => {
+            const y = top + plotHeight - tick * plotHeight;
+            return (
+              <g key={`pareto-tick-${tick}`}>
+                <line className="axis-grid" x1={left} x2={chartWidth - right} y1={y} y2={y} />
+                <text className="axis-label" x={left - 10} y={y + 4} textAnchor="end">
+                  {formatNumber(maxValue * tick)}
+                </text>
+                <text className="axis-label" x={chartWidth - right + 8} y={y + 4}>
+                  {Math.round(tick * 100)}%
+                </text>
+              </g>
+            );
+          })}
+          <line className="axis-line" x1={left} x2={left} y1={top} y2={chartHeight - bottom} />
+          <line className="axis-line" x1={chartWidth - right} x2={chartWidth - right} y1={top} y2={chartHeight - bottom} />
+          <line className="axis-line" x1={left} x2={chartWidth - right} y1={chartHeight - bottom} y2={chartHeight - bottom} />
+          {sortedRows.map((row, index) => {
+            const value = Number(row[valueKey]) || 0;
+            const height = Math.max((value / maxValue) * plotHeight, 8);
+            const x = left + index * slotWidth + (slotWidth - barWidth) / 2;
+            const y = top + plotHeight - height;
+            return (
+              <g className="bar-group" key={`${row[labelKey]}-${index}`}>
+                <rect className="bar-hit" x={x - 8} y={top} width={barWidth + 16} height={plotHeight} rx="12">
+                  <title>{`${row[labelKey]}: ${formatNumber(value)} (${chartPercent(value, totalValue)}%)`}</title>
+                </rect>
+                <rect className="bar-column" x={x} y={y} width={barWidth} height={height} rx="11" fill="url(#paretoBar)" />
+                <text className="bar-value" x={x + barWidth / 2} y={y - 8} textAnchor="middle">
+                  {formatNumber(value)}
+                </text>
+                <text className="bar-label" x={x + barWidth / 2} y={chartHeight - 22} textAnchor="middle">
+                  {shortLabel(row[labelKey], 10)}
+                </text>
+                <text className="bar-percent" x={x + barWidth / 2} y={chartHeight - 8} textAnchor="middle">
+                  {chartPercent(value, totalValue)}%
+                </text>
+              </g>
+            );
+          })}
+          <path className="pareto-area" d={areaPath} />
+          <path className="pareto-line" d={linePath} />
+          {linePoints.map((point, index) => (
+            <g className="pareto-point" key={`pareto-point-${index}`}>
+              <circle cx={point.x} cy={point.y} r="4.5">
+                <title>{`Acumulado: ${formatNumber(point.percent)}%`}</title>
+              </circle>
+            </g>
+          ))}
+        </svg>
+      </div>
     </section>
   );
 }
@@ -242,17 +430,37 @@ function StatisticsDashboard({ data }) {
     (total, row) => total + Number(row.orders_count || 0),
     0,
   );
-  const expirationSummary = data.expiration_waste_summary || {};
+  const topWaste = (data.most_wasted_products || [])[0];
+  const topLoss = [...(data.waste_economic_losses || [])].sort(
+    (a, b) => Number(b.economic_loss || 0) - Number(a.economic_loss || 0),
+  )[0];
+  const averageLoss = wastedUnits ? economicLoss / wastedUnits : 0;
 
   return (
     <div className="stats-dashboard">
+      <section className="panel-card executive-summary">
+        <div>
+          <span>Principal foco de merma</span>
+          <strong>{topWaste?.product_name || "Sin datos"}</strong>
+          <small>{topWaste ? `${formatNumber(topWaste.wasted_quantity)} unidades registradas` : "Aun no hay desechos registrados"}</small>
+        </div>
+        <div>
+          <span>Motivo de mayor impacto</span>
+          <strong>{topLoss?.reason || "Sin datos"}</strong>
+          <small>{topLoss ? `${formatNumber(topLoss.economic_loss)} de perdida economica` : "Sin perdidas calculadas"}</small>
+        </div>
+        <div>
+          <span>Coste medio por unidad</span>
+          <strong>{formatNumber(averageLoss)}</strong>
+          <small>Perdida economica / unidades desechadas</small>
+        </div>
+      </section>
+
       <div className="kpi-grid">
         <KpiCard label="Productos monitorizados" value={productsCount} tone="info" />
         <KpiCard label="Unidades desechadas" value={wastedUnits} tone="warning" />
         <KpiCard label="Perdida economica" value={economicLoss} tone="danger" />
         <KpiCard label="Pedidos registrados" value={ordersCount} tone="success" />
-        <KpiCard label="Productos caducados" value={expirationSummary.expired_products_count || 0} tone="warning" />
-        <KpiCard label="Perdida por caducidad" value={expirationSummary.expired_economic_loss || 0} tone="danger" />
       </div>
 
       <div className="stats-charts">
@@ -262,27 +470,11 @@ function StatisticsDashboard({ data }) {
           labelKey="product_name"
           valueKey="wasted_quantity"
         />
-        <ColumnChart
-          title="Perdidas economicas por motivo"
+        <ParetoChart
+          title="Analisis Pareto de perdidas"
           rows={data.waste_economic_losses}
           labelKey="reason"
           valueKey="economic_loss"
-        />
-        <ColumnChart
-          title="Unidades desechadas por motivo"
-          rows={data.waste_quantities_by_reason}
-          labelKey="reason"
-          valueKey="quantity"
-        />
-        <DataTable
-          title="Resumen de caducidad automatica"
-          rows={[
-            {
-              expired_products_count: expirationSummary.expired_products_count || 0,
-              expired_units: expirationSummary.expired_units || 0,
-              expired_economic_loss: expirationSummary.expired_economic_loss || 0,
-            },
-          ]}
         />
       </div>
     </div>

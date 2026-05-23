@@ -106,14 +106,6 @@ export default function ChatPage() {
     localStorage.setItem("erp-theme", nextTheme);
   };
 
-  const toggleTheme = () => {
-    setTheme((currentTheme) => {
-      const nextTheme = currentTheme === "dark" ? "light" : "dark";
-      localStorage.setItem("erp-theme", nextTheme);
-      return nextTheme;
-    });
-  };
-
   const refreshPanel = async (action) => {
     const dashboardByAction = {
       list_products: ["Inventario actualizado", getProducts],
@@ -140,7 +132,7 @@ export default function ChatPage() {
 
     const panel = dashboardByAction[action];
     if (!panel) {
-      return;
+      return false;
     }
 
     const [nextTitle, loader] = panel;
@@ -151,9 +143,11 @@ export default function ChatPage() {
       setPanelTitle(nextTitle);
     } catch {
       // The chat response still remains available if the live panel refresh fails.
+      return false;
     } finally {
       setPanelRefreshing(false);
     }
+    return true;
   };
 
   const handleSubmit = async (event) => {
@@ -224,9 +218,20 @@ export default function ChatPage() {
         },
       ]);
 
-      await refreshPanel(response.action);
-      if (!response.action?.startsWith("list_") && response.action !== "show_statistics" && response.data) {
-        setResultData((currentData) => currentData || response.data);
+      const directPanelTitles = {
+        show_audit_history: "Trazabilidad",
+        configure_auto_replenishment: "Reposicion automatica",
+      };
+
+      if (directPanelTitles[response.action] && response.data) {
+        setPanelTitle(directPanelTitles[response.action]);
+        setResultData(response.data);
+      } else {
+        const panelWasRefreshed = await refreshPanel(response.action);
+        if (!panelWasRefreshed && response.data) {
+          setPanelTitle(actionLabel);
+          setResultData(response.data);
+        }
       }
     } catch (error) {
       setMessages((current) => [
@@ -270,16 +275,6 @@ export default function ChatPage() {
           </p>
 
           <div className="topbar-controls">
-            <button
-              className="theme-toggle"
-              type="button"
-              onClick={toggleTheme}
-              aria-label={theme === "dark" ? "Activar modo claro" : "Activar modo oscuro"}
-              title={theme === "dark" ? "Modo claro" : "Modo oscuro"}
-            >
-              <span className="bulb-icon" aria-hidden="true" />
-            </button>
-
             <label className="provider-box">
               <span>Modelo Gemini</span>
               <select value={provider} onChange={(event) => setProvider(event.target.value)}>
