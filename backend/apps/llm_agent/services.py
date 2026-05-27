@@ -265,6 +265,9 @@ def audit_entities_for(action, data):
 
 def record_action_audit(action, reply, data):
     entity_type, entity_name, entity_id, related_entities = audit_entities_for(action, data or {})
+    payload = data if isinstance(data, dict) else {}
+    if isinstance(data, list):
+        payload = {"results_count": len(data)}
     record_audit(
         action=action,
         summary=reply,
@@ -272,7 +275,7 @@ def record_action_audit(action, reply, data):
         entity_name=entity_name,
         entity_id=entity_id,
         related_entities=related_entities,
-        payload=data or {},
+        payload=payload,
     )
 
 
