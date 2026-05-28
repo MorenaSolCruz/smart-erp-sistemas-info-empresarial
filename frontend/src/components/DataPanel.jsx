@@ -550,6 +550,14 @@ export default function DataPanel({ data, title = "Resultados", isRefreshing = f
     return <div className={isRefreshing ? "panel-refreshing" : ""}>{isProductList ? <ProductLivePanel title={title} rows={data} /> : <DataTable title={title} rows={data} />}</div>;
   }
 
+  if (data.chart_type === "inventory_stock" && Array.isArray(data.rows)) {
+    return (
+      <div className={isRefreshing ? "panel-refreshing" : ""}>
+        <ProductLivePanel title={data.title || title} rows={data.rows} />
+      </div>
+    );
+  }
+
   if (!data.low_stock_products && !data.most_wasted_products) {
     return <DataTable title={title} rows={[data]} />;
   }

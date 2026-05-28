@@ -4,6 +4,7 @@ import {
   getProducts,
   getPurchaseOrders,
   getStatistics,
+  pingBackend,
   getSuppliers,
   getWasteRecords,
   postAgentMessage,
@@ -66,11 +67,7 @@ const cancellationMessages = {
 };
 
 const providerNotes = {
-  "": "Usa el proveedor configurado por defecto en el backend.",
   mock: "Modo de demostracion sin llamadas a APIs externas.",
-  local: "Usa el modelo local configurado en el backend.",
-  openai: "Usa OpenAI si la clave API esta configurada.",
-  claude: "Usa Claude si la clave API esta configurada.",
   gemini: "Usa Gemini si la clave API esta configurada.",
   "gemini-2.5-flash": "Modelo equilibrado para operaciones del ERP.",
   "gemini-2.5-flash-lite": "Modelo ligero para respuestas rapidas.",
@@ -106,7 +103,7 @@ function detectThemeCommand(message) {
 }
 
 export default function ChatPage() {
-  const defaultProvider = import.meta.env.VITE_DEFAULT_LLM_PROVIDER || "gemini";
+  const defaultProvider = import.meta.env.VITE_DEFAULT_LLM_PROVIDER || "gemini-2.5-flash";
   const [provider, setProvider] = useState(defaultProvider);
   const [messages, setMessages] = useState(initialMessages);
   const [input, setInput] = useState("");
@@ -116,8 +113,22 @@ export default function ChatPage() {
   const [panelRefreshing, setPanelRefreshing] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem("erp-theme") || "light");
   const [pendingAction, setPendingAction] = useState(null);
+  const [backendReady, setBackendReady] = useState(false);
+  const [backendChecking, setBackendChecking] = useState(true);
 
   useEffect(() => {
+    const initializeBackend = async () => {
+      try {
+        await pingBackend();
+        setBackendReady(true);
+      } catch {
+        setBackendReady(false);
+      } finally {
+        setBackendChecking(false);
+      }
+    };
+
+    initializeBackend();
     refreshPanel("show_statistics");
   }, []);
 
@@ -176,6 +187,24 @@ export default function ChatPage() {
     return true;
   };
 
+  const ensureBackendReady = async () => {
+    if (backendReady) {
+      return true;
+    }
+
+    setBackendChecking(true);
+    try {
+      await pingBackend();
+      setBackendReady(true);
+      return true;
+    } catch {
+      setBackendReady(false);
+      return false;
+    } finally {
+      setBackendChecking(false);
+    }
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (!input.trim() || loading) {
@@ -188,6 +217,11 @@ export default function ChatPage() {
     setLoading(true);
 
     try {
+      const backendAvailable = await ensureBackendReady();
+      if (!backendAvailable) {
+        throw new Error("El backend aun se esta iniciando. Espera un momento y vuelve a intentarlo.");
+      }
+
       const normalizedMessage = normalizeMessage(userMessage);
       const requestedTheme = detectThemeCommand(userMessage);
 
@@ -228,6 +262,7 @@ export default function ChatPage() {
 
       const payload = provider ? { message: outgoingMessage, provider } : { message: outgoingMessage };
       const response = await postAgentMessage(payload);
+      setBackendReady(true);
       const actionLabel = actionLabels[response.action] || "Operacion ERP";
       const providerDetail = response.provider_status ? ` | ${response.provider_status}` : "";
 
@@ -262,6 +297,7 @@ export default function ChatPage() {
         }
       }
     } catch (error) {
+      setBackendReady(false);
       setMessages((current) => [
         ...current,
         {
@@ -306,11 +342,7 @@ export default function ChatPage() {
             <label className="provider-box">
               <span>Proveedor LLM</span>
               <select value={provider} onChange={(event) => setProvider(event.target.value)}>
-                <option value="">Predeterminado del backend</option>
                 <option value="mock">Mock</option>
-                <option value="local">Local</option>
-                <option value="openai">OpenAI</option>
-                <option value="claude">Claude</option>
                 <option value="gemini">Gemini</option>
                 <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                 <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
@@ -329,7 +361,7 @@ export default function ChatPage() {
                 <h2>Gestiona el almacen por conversacion</h2>
               </div>
               <div className={`status-dot ${loading ? "status-busy" : ""}`}>
-                {loading ? "Procesando" : "Operativo"}
+                {loading ? "Procesando" : backendChecking ? "Conectando" : backendReady ? "Operativo" : "Backend no listo"}
               </div>
             </div>
 
@@ -357,8 +389,8 @@ export default function ChatPage() {
                 onKeyDown={handleComposerKeyDown}
                 placeholder="Escribe una orden para Maja..."
               />
-              <button type="submit" disabled={loading}>
-                {loading ? "Procesando..." : "Enviar"}
+              <button type="submit" disabled={loading || backendChecking}>
+                {loading ? "Procesando..." : backendChecking ? "Conectando..." : "Enviar"}
               </button>
             </form>
           </section>

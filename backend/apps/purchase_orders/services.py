@@ -394,6 +394,25 @@ def mark_purchase_order_completed(order_id):
     return serialize_purchase_order(order)
 
 
+def append_items_to_purchase_order(order_id, raw_items):
+    order = resolve_purchase_order(order_id)
+    ensure_open_for_edit(order)
+    normalized_items, added_total_amount = _normalize_items(raw_items)
+    order.items.extend(normalized_items)
+    order.total_amount = Decimal(str(order.total_amount)) + added_total_amount
+    order.updated_at = utcnow()
+    order.history.append(
+        build_order_event(
+            "updated",
+            f"Pedido actualizado para {order.supplier.name}.",
+            items=normalized_items,
+            metadata={"mode": "append"},
+        )
+    )
+    order.save()
+    return serialize_purchase_order(order)
+
+
 def cancel_latest_purchase_order():
     latest = order_insights("latest")
     if not latest:

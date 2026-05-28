@@ -6,7 +6,7 @@ from apps.audit.services import (
     serialize_audit_entry,
     supplier_audit_history,
 )
-from apps.llm_agent.providers import confirmation_token, get_provider
+from apps.llm_agent.providers import confirmation_token, get_provider, parse_confirmation_token
 from apps.products.services import (
     clear_products_inventory,
     create_product,
@@ -18,6 +18,7 @@ from apps.products.services import (
 )
 from apps.purchase_orders.domain import PurchaseOrderDomainError
 from apps.purchase_orders.services import (
+    append_items_to_purchase_order,
     cancel_latest_purchase_order,
     cancel_purchase_order,
     create_purchase_order,
@@ -36,6 +37,7 @@ from apps.suppliers.services import (
     delete_supplier,
     get_supplier_document_by_name,
     list_suppliers,
+    serialize_supplier,
     update_supplier,
 )
 from apps.suppliers.models import Supplier
@@ -57,6 +59,8 @@ from common.observability import ObservedOperation, increment_metric
 CONVERSATION_MEMORY = {
     "last_supplier_name": None,
     "last_product_name": None,
+    "last_purchase_order_id": None,
+    "pending_action": None,
     "auto_replenishment_enabled": False,
     "auto_replenishment_threshold": None,
 }
@@ -66,6 +70,8 @@ def get_conversation_context():
     return {
         "last_supplier_name": CONVERSATION_MEMORY.get("last_supplier_name"),
         "last_product_name": CONVERSATION_MEMORY.get("last_product_name"),
+        "last_purchase_order_id": CONVERSATION_MEMORY.get("last_purchase_order_id"),
+        "pending_action": CONVERSATION_MEMORY.get("pending_action"),
         "auto_replenishment_enabled": CONVERSATION_MEMORY.get("auto_replenishment_enabled", False),
         "auto_replenishment_threshold": CONVERSATION_MEMORY.get("auto_replenishment_threshold"),
     }
@@ -81,9 +87,24 @@ def remember_product_name(product_name):
         CONVERSATION_MEMORY["last_product_name"] = product_name
 
 
+def remember_purchase_order_id(order_id):
+    if order_id:
+        CONVERSATION_MEMORY["last_purchase_order_id"] = order_id
+
+
+def remember_pending_action(pending_action):
+    CONVERSATION_MEMORY["pending_action"] = pending_action
+
+
+def clear_pending_action():
+    CONVERSATION_MEMORY["pending_action"] = None
+
+
 def set_auto_replenishment(enabled, threshold=None):
     CONVERSATION_MEMORY["auto_replenishment_enabled"] = bool(enabled)
-    if threshold is not None:
+    if threshold is None:
+        CONVERSATION_MEMORY["auto_replenishment_threshold"] = None
+    else:
         CONVERSATION_MEMORY["auto_replenishment_threshold"] = int(threshold)
 
 
@@ -123,6 +144,7 @@ def confirmation_prompt_for(intent, data):
 
 def maybe_require_confirmation(message, result):
     intent = result.get("intent")
+    result_data = result.get("data", {}) or {}
     sensitive_intents = {
         "delete_supplier",
         "update_purchase_order",
@@ -133,6 +155,8 @@ def maybe_require_confirmation(message, result):
         "delete_all_waste",
     }
     if intent not in sensitive_intents:
+        return None
+    if intent == "update_purchase_order" and result_data.get("append_items"):
         return None
     if result.get("confirmed"):
         return None
@@ -148,7 +172,7 @@ def maybe_require_confirmation(message, result):
         "reply": confirmation_prompt_for(intent, result.get("data", {})),
         "data": {
             "pending_action": intent,
-            "confirmation_token": confirmation_token(intent, result.get("reply"), result.get("data", {})),
+            "confirmation_token": confirmation_token(intent, result.get("reply"), result_data),
         },
         "provider_status": None,
     }
@@ -217,7 +241,9 @@ def maybe_auto_generate_replenishment(action, data):
     product_name = data.get("name") or data.get("product_name")
     stock = data.get("stock", data.get("remaining_stock"))
     minimum_stock = data.get("minimum_stock")
-    if not product_name or minimum_stock is None or stock is None or stock >= minimum_stock or minimum_stock <= 0:
+    configured_threshold = CONVERSATION_MEMORY.get("auto_replenishment_threshold")
+    effective_threshold = configured_threshold if configured_threshold is not None else minimum_stock
+    if not product_name or effective_threshold is None or stock is None or stock >= effective_threshold or effective_threshold <= 0:
         return None
 
     supplier = find_supplier_for_product(product_name)
@@ -227,7 +253,7 @@ def maybe_auto_generate_replenishment(action, data):
             "auto_order": None,
         }
 
-    quantity = max(int(minimum_stock) - int(stock), 1)
+    quantity = max(int(effective_threshold) - int(stock), 1)
     order = create_purchase_order(
         {
             "supplier_id": str(supplier.id),
@@ -361,13 +387,303 @@ def _functional_error_code(exc):
     return "functional_error"
 
 
+def build_pending_product_selection(intent, data):
+    if not isinstance(data, dict):
+        return None
+
+    if intent == "add_product_stock" and data.get("name") and data.get("quantity") is not None:
+        return {
+            "intent": intent,
+            "reply": f"Completo la entrada de inventario para {data['name']}.",
+            "name": data["name"],
+            "quantity": int(data["quantity"]),
+        }
+
+    if intent == "create_purchase_order":
+        items = data.get("items") or []
+        if data.get("supplier_name") and items:
+            item = items[0]
+            if item.get("product_name") and item.get("quantity") is not None:
+                pending = {
+                    "intent": intent,
+                    "reply": f"Completo el pedido pendiente para {data['supplier_name']}.",
+                    "supplier_name": data["supplier_name"],
+                    "items": items,
+                }
+                return pending
+
+    return None
+
+
+def maybe_store_pending_action(intent, result_data, exc):
+    message = str(exc)
+    if "He encontrado varios productos" not in message:
+        clear_pending_action()
+        return
+
+    pending_action = build_pending_product_selection(intent, result_data)
+    if pending_action:
+        remember_pending_action(pending_action)
+    else:
+        clear_pending_action()
+
+
+def maybe_store_duplicate_update_action(intent, result_data):
+    if not isinstance(result_data, dict):
+        clear_pending_action()
+        return
+
+    if intent == "create_product" and result_data.get("name"):
+        remember_pending_action(
+            {
+                "intent": "duplicate_create_product",
+                "name": result_data["name"],
+                "update_data": result_data,
+            }
+        )
+        return
+
+    if intent == "create_supplier" and result_data.get("name"):
+        remember_pending_action(
+            {
+                "intent": "duplicate_create_supplier",
+                "name": result_data["name"],
+                "update_data": result_data,
+            }
+        )
+        return
+
+    clear_pending_action()
+
+
+def parse_pending_duplicate_update_command(message, context):
+    normalized_message = normalize_action_message(message).strip()
+    if normalized_message not in {"actualiza", "actualizar", "actualizalo", "actualizala", "si actualiza"}:
+        return None
+
+    pending = (context or {}).get("pending_action")
+    if not isinstance(pending, dict):
+        return None
+
+    update_data = dict(pending.get("update_data") or {})
+    if not update_data.get("name"):
+        return None
+
+    if pending.get("intent") == "duplicate_create_product":
+        return {
+            "intent": "update_product",
+            "reply": f"Actualizo el producto {update_data['name']}.",
+            "data": update_data,
+        }
+
+    if pending.get("intent") == "duplicate_create_supplier":
+        return {
+            "intent": "update_supplier",
+            "reply": f"Actualizo el proveedor {update_data['name']}.",
+            "data": update_data,
+        }
+
+    return None
+
+
+def parse_auto_replenishment_command(message):
+    normalized_message = normalize_action_message(message).strip()
+    if not any(
+        term in normalized_message
+        for term in [
+            "reposicion",
+            "reabastecimiento",
+            "pedido automatico",
+            "pedidos automaticos",
+            "alertas automaticas de stock",
+            "automatizaciones",
+            "sin stock",
+        ]
+    ):
+        return None
+
+    if any(term in normalized_message for term in ["desactiva", "desactivar", "deshabilita", "deshabilitar", "apaga"]):
+        return {
+            "intent": "configure_auto_replenishment",
+            "reply": "Desactivo la reposicion automatica de pedidos.",
+            "data": {"enabled": False, "threshold": None},
+        }
+
+    if "sin stock" in normalized_message:
+        return {
+            "intent": "configure_auto_replenishment",
+            "reply": "Activo la reposicion automatica para productos sin stock.",
+            "data": {"enabled": True, "threshold": 1},
+        }
+
+    threshold_match = None
+    if "menos de" in normalized_message:
+        import re
+
+        threshold_match = re.search(r"menos de (?P<threshold>\d+)", normalized_message)
+    threshold = int(threshold_match.group("threshold")) if threshold_match else None
+
+    if any(term in normalized_message for term in ["activa", "activar", "habilita", "habilitar", "enciende"]):
+        return {
+            "intent": "configure_auto_replenishment",
+            "reply": "Activo la reposicion automatica de pedidos por stock bajo.",
+            "data": {"enabled": True, "threshold": threshold},
+        }
+
+    return None
+
+
+def parse_demo_shortcut_command(message, context):
+    import re
+
+    normalized_message = normalize_action_message(message).strip()
+    normalized_message = normalized_message.strip("¿?!. ")
+    context = context or {}
+    last_supplier_name = context.get("last_supplier_name")
+    last_purchase_order_id = context.get("last_purchase_order_id")
+
+    if normalized_message in {
+        "cual es el email del ultimo proveedor registrado?",
+        "cual es el email del ultimo proveedor registrado",
+    }:
+        if not last_supplier_name:
+            return {
+                "intent": "missing_data",
+                "reply": "No tengo un proveedor reciente en memoria. Registra o consulta antes un proveedor.",
+                "data": {},
+            }
+        return {
+            "intent": "list_suppliers",
+            "reply": f"Consulto los datos del proveedor {last_supplier_name}.",
+            "data": {"name": last_supplier_name},
+        }
+
+    previous_phone_match = re.search(
+        r"actualiza el telefono del proveedor anterior a (?P<phone>[\d+ ]+)$",
+        normalized_message,
+    )
+    if previous_phone_match:
+        if not last_supplier_name:
+            return {
+                "intent": "missing_data",
+                "reply": "No tengo un proveedor anterior en memoria. Indica el nombre del proveedor.",
+                "data": {},
+            }
+        return {
+            "intent": "update_supplier",
+            "reply": f"Actualizo el teléfono del proveedor {last_supplier_name}.",
+            "data": {"name": last_supplier_name, "phone": previous_phone_match.group("phone").strip()},
+        }
+
+    if normalized_message in {
+        "cuantos productos hay registrados actualmente?",
+        "cuantos productos hay registrados actualmente",
+    }:
+        return {
+            "intent": "query_products",
+            "reply": "Calculo cuántos productos hay registrados actualmente.",
+            "data": {"kind": "products_count"},
+        }
+
+    add_same_order_match = re.search(
+        r"(?:anade|añade) tambien (?P<quantity>\d+) (?P<product>.+?) al mismo pedido$",
+        normalized_message,
+    )
+    if add_same_order_match:
+        if not last_purchase_order_id:
+            return {
+                "intent": "missing_data",
+                "reply": "No tengo un pedido reciente en memoria. Crea primero el pedido al que quieres añadir líneas.",
+                "data": {},
+            }
+        product_name = add_same_order_match.group("product").strip()
+        return {
+            "intent": "update_purchase_order",
+            "reply": "Añado una nueva línea al último pedido creado.",
+            "data": {
+                "id": last_purchase_order_id,
+                "append_items": True,
+                "items": [{"product_name": product_name.title(), "quantity": int(add_same_order_match.group("quantity"))}],
+            },
+        }
+
+    waste_match = re.search(
+        r"registra un desecho de (?P<quantity>\d+) unidades de (?P<product>.+?) por (?P<reason>deterioro|obsolescencia)$",
+        normalized_message,
+    )
+    if waste_match:
+        return {
+            "intent": "create_waste",
+            "reply": f"Registro el desecho de {waste_match.group('product').title()}.",
+            "data": {
+                "product_name": waste_match.group("product").title(),
+                "quantity": int(waste_match.group("quantity")),
+                "reason": waste_match.group("reason"),
+            },
+        }
+
+    if normalized_message == "genera una grafica de productos con menos stock":
+        return {
+            "intent": "query_products",
+            "reply": "Genero una gráfica con los productos de menor stock.",
+            "data": {"kind": "low_stock_chart", "threshold": 5},
+        }
+
+    if normalized_message in {
+        "muestrame los productos con menos de 5 unidades",
+        "muestrame los productos con menos de 5 unidades.",
+    }:
+        return {
+            "intent": "query_products",
+            "reply": "Consulto los productos con menos de 5 unidades.",
+            "data": {"kind": "low_stock", "threshold": 5},
+        }
+
+    expensive_match = re.search(r"dame los (?P<limit>\d+) productos mas caros$", normalized_message)
+    if expensive_match:
+        return {
+            "intent": "query_products",
+            "reply": "Consulto los productos más caros.",
+            "data": {"kind": "top_expensive", "limit": int(expensive_match.group("limit"))},
+        }
+
+    if normalized_message in {
+        "calcula el valor economico total del almacen",
+        "calcula el valor economico total del almacen.",
+    }:
+        return {
+            "intent": "query_products",
+            "reply": "Calculo el valor económico total del almacén.",
+            "data": {"kind": "inventory_value"},
+        }
+
+    return None
+
+
 def execute_agent_action(message, provider_name=None, request_id=None):
     process_expired_products()
     provider = get_provider(provider_name)
     with ObservedOperation("agent_chat", request_id=request_id, provider=provider.name) as operation:
         intent = "fallback"
         try:
-            result = provider.generate_response(message, context=get_conversation_context())
+            conversation_context = get_conversation_context()
+            confirmed_action = parse_confirmation_token(message.strip())
+            if confirmed_action:
+                result = confirmed_action
+            else:
+                direct_auto_replenishment = parse_auto_replenishment_command(message)
+                if direct_auto_replenishment:
+                    result = direct_auto_replenishment
+                else:
+                    demo_shortcut = parse_demo_shortcut_command(message, conversation_context)
+                    if demo_shortcut:
+                        result = demo_shortcut
+                    else:
+                        direct_pending_update = parse_pending_duplicate_update_command(message, conversation_context)
+                        if direct_pending_update:
+                            result = direct_pending_update
+                        else:
+                            result = provider.generate_response(message, context=conversation_context)
             intent = result.get("intent", "fallback")
             provider_status = result.get("provider_status")
 
@@ -393,6 +709,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return confirmation_response
 
             if intent == "help":
+                clear_pending_action()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], None, provider_status=provider_status, request_id=operation.request_id
                 )
@@ -414,6 +731,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "configure_auto_replenishment":
+                clear_pending_action()
                 enabled = bool(result["data"].get("enabled"))
                 threshold = result["data"].get("threshold")
                 set_auto_replenishment(enabled, threshold)
@@ -429,6 +747,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "show_audit_history":
+                clear_pending_action()
                 reply, rows = execute_audit_history_request(result["data"])
                 response = build_agent_response(
                     provider.name, intent, reply, rows, provider_status=provider_status, request_id=operation.request_id
@@ -437,6 +756,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "list_products":
+                clear_pending_action()
                 data = list_products()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -445,6 +765,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "query_products":
+                clear_pending_action()
                 query_data = result.get("data", {})
                 data = product_insights(
                     query_data.get("kind"),
@@ -460,6 +781,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
 
             if intent == "get_product_stock":
                 product = get_product_document_by_name(result["data"]["name"])
+                clear_pending_action()
                 remember_product_name(product.name)
                 data = {
                     "name": product.name,
@@ -475,6 +797,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "create_product":
+                clear_pending_action()
                 data = create_product(result["data"])
                 remember_product_name(data.get("name"))
                 response = build_agent_response(
@@ -498,6 +821,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                             "minimum_stock": 0,
                         }
                     )
+                clear_pending_action()
                 remember_product_name(data.get("name"))
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -511,6 +835,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 if "new_name" in payload:
                     payload["name"] = payload.pop("new_name")
                 data = update_product(str(product.id), payload)
+                clear_pending_action()
                 remember_product_name(data.get("name"))
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -520,6 +845,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
 
             if intent == "delete_product":
                 product = get_product_document_by_name(result["data"]["name"])
+                clear_pending_action()
                 remember_product_name(product.name)
                 quantity = result["data"].get("quantity")
                 data = delete_product(str(product.id), quantity=quantity)
@@ -531,6 +857,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "delete_all_products":
+                clear_pending_action()
                 data = clear_products_inventory()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -539,7 +866,13 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "list_suppliers":
-                data = list_suppliers()
+                clear_pending_action()
+                if result.get("data", {}).get("name"):
+                    supplier = get_supplier_document_by_name(result["data"]["name"])
+                    data = serialize_supplier(supplier)
+                    remember_supplier_name(supplier.name)
+                else:
+                    data = list_suppliers()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
                 )
@@ -547,6 +880,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "create_supplier":
+                clear_pending_action()
                 data = create_supplier(result["data"])
                 remember_supplier_name(data.get("name"))
                 response = build_agent_response(
@@ -561,6 +895,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 if "new_name" in payload:
                     payload["name"] = payload.pop("new_name")
                 data = update_supplier(str(supplier.id), payload)
+                clear_pending_action()
                 remember_supplier_name(data.get("name"))
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -570,6 +905,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
 
             if intent == "delete_supplier":
                 supplier = get_supplier_document_by_name(result["data"]["name"])
+                clear_pending_action()
                 remember_supplier_name(supplier.name)
                 data = delete_supplier(str(supplier.id))
                 data["name"] = supplier.name
@@ -580,6 +916,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "delete_all_suppliers":
+                clear_pending_action()
                 data = clear_suppliers()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -588,6 +925,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "list_purchase_orders":
+                clear_pending_action()
                 data = list_purchase_orders(status=result.get("data", {}).get("status"))
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -596,6 +934,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "query_purchase_orders":
+                clear_pending_action()
                 data = order_insights(result.get("data", {}).get("kind"))
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -611,6 +950,8 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                     "items": result["data"]["items"],
                 }
                 data = create_purchase_order(payload)
+                remember_purchase_order_id(data.get("id"))
+                clear_pending_action()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
                 )
@@ -626,6 +967,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                     data = receive_latest_purchase_order_for_supplier(
                         str(supplier.id), received_items=result["data"].get("items")
                     )
+                clear_pending_action()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
                 )
@@ -646,6 +988,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                     if not matching_order:
                         raise ValidationError(f"No hay pedidos abiertos para el proveedor {supplier.name}.")
                     data = cancel_purchase_order(matching_order["id"], reason=result["data"].get("reason", ""))
+                clear_pending_action()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
                 )
@@ -653,14 +996,20 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "update_purchase_order":
-                supplier = get_supplier_document_by_name(result["data"]["supplier_name"])
-                remember_supplier_name(supplier.name)
-                payload = {
-                    "supplier_id": str(supplier.id),
-                    "items": result["data"]["items"],
-                    "status": result["data"].get("status", "received"),
-                }
-                data = update_purchase_order(result["data"]["id"], payload)
+                if result["data"].get("append_items"):
+                    data = append_items_to_purchase_order(result["data"]["id"], result["data"]["items"])
+                    remember_supplier_name(data.get("supplier_name"))
+                else:
+                    supplier = get_supplier_document_by_name(result["data"]["supplier_name"])
+                    remember_supplier_name(supplier.name)
+                    payload = {
+                        "supplier_id": str(supplier.id),
+                        "items": result["data"]["items"],
+                        "status": result["data"].get("status", "received"),
+                    }
+                    data = update_purchase_order(result["data"]["id"], payload)
+                remember_purchase_order_id(data.get("id"))
+                clear_pending_action()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
                 )
@@ -668,6 +1017,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "delete_purchase_order":
+                clear_pending_action()
                 data = delete_purchase_order(result["data"]["id"])
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -676,6 +1026,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "complete_purchase_order":
+                clear_pending_action()
                 data = mark_purchase_order_completed(result["data"]["id"])
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -684,6 +1035,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "cancel_latest_purchase_order":
+                clear_pending_action()
                 data = cancel_latest_purchase_order()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -692,6 +1044,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "list_waste":
+                clear_pending_action()
                 data = list_waste_records()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -700,6 +1053,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "create_waste":
+                clear_pending_action()
                 data = create_waste_record(result["data"])
                 remember_product_name(data.get("product_name"))
                 response = build_agent_response(
@@ -709,6 +1063,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "update_waste":
+                clear_pending_action()
                 data = update_waste_record(result["data"]["id"], result["data"])
                 remember_product_name(data.get("product_name"))
                 response = build_agent_response(
@@ -718,6 +1073,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "delete_waste":
+                clear_pending_action()
                 data = delete_waste_record(result["data"]["id"])
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -726,6 +1082,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "delete_all_waste":
+                clear_pending_action()
                 data = clear_waste_records()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -734,6 +1091,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "show_statistics":
+                clear_pending_action()
                 data = statistics_overview()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
@@ -760,17 +1118,19 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 request_id=operation.request_id,
             )
         except NotUniqueError as exc:
+            maybe_store_duplicate_update_action(intent, result.get("data"))
             operation.failure("functional", _functional_error_code(exc), intent=intent)
             return build_agent_response(
                 provider.name,
                 intent,
-                "Ya existe un registro con esos datos. Usa otro nombre o actualiza el registro existente.",
+                "Ya existe un registro con esos datos. Usa otro nombre o responde 'actualiza' para aplicar estos datos al registro existente.",
                 None,
                 success=False,
                 error_type="functional",
                 request_id=operation.request_id,
             )
         except (ValidationError, PurchaseOrderDomainError) as exc:
+            maybe_store_pending_action(intent, result.get("data"), exc)
             operation.failure("functional", _functional_error_code(exc), intent=intent)
             reply = readable_validation_error(exc) if isinstance(exc, ValidationError) else str(exc)
             return build_agent_response(
@@ -803,6 +1163,7 @@ def build_agent_response(provider, action, reply, data, success=True, provider_s
             reply = f"{reply}{auto_replenishment['reply_note']}"
             if auto_replenishment.get("auto_order") and isinstance(data, dict):
                 data = {**data, "auto_generated_order": auto_replenishment["auto_order"]}
+        data = sanitize_agent_data(data)
         if action != "show_audit_history":
             record_action_audit(action, reply, data)
 
@@ -834,12 +1195,18 @@ def professional_reply(action, fallback_reply, data):
         return f"{fallback_reply}{note}" if note else fallback_reply
 
     if action.startswith("list_"):
+        if isinstance(data, dict):
+            return "Consulta realizada correctamente. Se muestran los datos solicitados."
         total = len(data) if isinstance(data, list) else 0
         return f"Consulta realizada correctamente. Se han encontrado {total} registro(s)."
 
     if action in ["query_products", "query_purchase_orders"]:
         if isinstance(data, list):
             return f"Consulta realizada correctamente. Se han encontrado {len(data)} resultado(s)."
+        if isinstance(data, dict) and data.get("products_count") is not None and data.get("_query_kind") == "products_count":
+            return f"Actualmente hay {data['products_count']} producto(s) registrados."
+        if isinstance(data, dict) and data.get("chart_type"):
+            return "Grafica preparada correctamente. Se muestra en el panel el analisis solicitado."
         return "Consulta calculada correctamente. Se muestran los datos solicitados en el panel."
 
     if action == "add_product_stock":
@@ -847,10 +1214,21 @@ def professional_reply(action, fallback_reply, data):
         note = proactive_note_for(action, data)
         return f"{reply}{note}" if note else reply
 
+    if action == "create_supplier":
+        sync_status = data.get("_sync_status") if isinstance(data, dict) else None
+        supplier_name = data.get("name", "indicado") if isinstance(data, dict) else "indicado"
+        if sync_status == "already_exists":
+            return f"El proveedor {supplier_name} ya existia y no ha sido necesario aplicar cambios."
+        if sync_status == "updated_existing":
+            return f"El proveedor {supplier_name} ya existia. Sus datos se han actualizado correctamente en el ERP."
+
     if action.startswith("create_"):
         reply = "Registro creado correctamente. La informacion queda disponible para nuevas consultas desde el chat."
         note = proactive_note_for(action, data)
         return f"{reply}{note}" if note else reply
+
+    if action == "update_supplier" and isinstance(data, dict) and data.get("_sync_status") == "unchanged":
+        return "El proveedor ya tenia esos datos. No ha sido necesario aplicar cambios."
 
     if action.startswith("update_"):
         reply = "Registro actualizado correctamente. Los cambios se han aplicado en el ERP."
@@ -902,3 +1280,9 @@ def readable_validation_error(exc):
     for original, replacement in replacements.items():
         message = message.replace(original, replacement)
     return message
+
+
+def sanitize_agent_data(data):
+    if isinstance(data, dict):
+        return {key: value for key, value in data.items() if not key.startswith("_")}
+    return data

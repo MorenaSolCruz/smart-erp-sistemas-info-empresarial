@@ -160,6 +160,31 @@ class BaseLLMProvider:
         raise NotImplementedError
 
 
+def build_contextual_user_message(user_message, context):
+    context = context or {}
+    context_lines = []
+
+    if context.get("last_supplier_name"):
+        context_lines.append(f"- ultimo_proveedor: {context['last_supplier_name']}")
+    if context.get("last_product_name"):
+        context_lines.append(f"- ultimo_producto: {context['last_product_name']}")
+
+    pending_action = context.get("pending_action")
+    if isinstance(pending_action, dict) and pending_action.get("intent"):
+        context_lines.append(f"- accion_pendiente: {pending_action['intent']}")
+
+    if not context_lines:
+        return user_message
+
+    return (
+        "Contexto conversacional actual:\n"
+        + "\n".join(context_lines)
+        + "\n\nUsa este contexto solo cuando el usuario haga referencias como "
+        "'creale', 'hazle', 'este proveedor' o equivalentes.\n\n"
+        + f"Mensaje del usuario:\n{user_message}"
+    )
+
+
 def normalize_text(value):
     value = unicodedata.normalize("NFD", value.strip().lower())
     return "".join(char for char in value if unicodedata.category(char) != "Mn")
@@ -331,6 +356,18 @@ def compact_product_name(value):
     return " ".join(value.split()).strip()
 
 
+def looks_like_new_command(message):
+    return bool(
+        re.search(
+            r"^(?:introduce|introducir|meter|mete|agrega|agregar|anade|anadir|añade|sumar|registra|registrar|"
+            r"crea|crear|actualiza|actualizar|modifica|modificar|borra|borrar|elimina|eliminar|muestra|"
+            r"mostrar|lista|listar|consulta|cuantos|cuantas|cuanto|haz|hacer|pide|pedir|recibimos|recibido|"
+            r"cancela|cancelar|anula|anular|marca|marcar)\b",
+            message,
+        )
+    )
+
+
 def is_full_inventory_delete_request(message):
     explicit_full_scope_patterns = [
         r"\b(?:elimina|eliminar|borra|borrar)\b.*\b(?:todo|todos|toda)\b.*\b(?:inventario|almacen|productos)\b",
@@ -459,6 +496,7 @@ class MockLLMProvider(BaseLLMProvider):
             }
 
         for parser in [
+            self._parse_pending_duplicate_update,
             self._parse_pending_product_selection,
             self._parse_product_supplier_question,
             self._parse_pending_purchase_orders,
@@ -646,8 +684,17 @@ class MockLLMProvider(BaseLLMProvider):
             return {"intent": "query_products", "reply": "Consulto el producto con mas stock.", "data": {"kind": "most_stock"}}
         if "precio" in message and any(term in message for term in ["desc", "caro", "caros", "mayor"]):
             return {"intent": "query_products", "reply": "Ordeno los productos por precio descendente.", "data": {"kind": "price_desc"}}
-        if any(term in message for term in ["valor del inventario", "valor inventario"]):
-            return {"intent": "query_products", "reply": "Calculo el valor economico del inventario.", "data": {"kind": "inventory_value"}}
+        if any(
+            term in message
+            for term in [
+                "valor del inventario",
+                "valor inventario",
+                "cuanto vale el inventario total",
+                "cuanto vale inventario total",
+                "vale el inventario total",
+            ]
+        ):
+            return {"intent": "query_products", "reply": "Calculo el valor total del inventario.", "data": {"kind": "inventory_value"}}
         if "agotad" in message:
             return {"intent": "query_products", "reply": "Consulto productos agotados.", "data": {"kind": "out_of_stock"}}
         if any(term in message for term in ["resumen inventario", "resumen del inventario"]):
@@ -1078,30 +1125,80 @@ class MockLLMProvider(BaseLLMProvider):
         if not pending:
             return None
 
-        if pending.get("intent") != "create_purchase_order":
+        if pending.get("intent") not in {"create_purchase_order", "add_product_stock"}:
             return None
 
-        selected_product = message
-        selected_product = re.sub(r"^(?:quiero usar|usar|usa|elijo|selecciono)\s+", "", selected_product).strip()
+        selection_prefix = re.match(r"^(?:quiero usar|usar|usa|elijo|selecciono)\s+", message)
+        if looks_like_new_command(message) and not selection_prefix:
+            return None
+
+        selected_product = re.sub(r"^(?:quiero usar|usar|usa|elijo|selecciono)\s+", "", message).strip()
 
         if not selected_product:
             return None
+
+        if pending.get("intent") == "add_product_stock":
+            quantity = pending.get("quantity")
+            if quantity is None:
+                return None
+            return {
+                "intent": "add_product_stock",
+                "reply": f"Registro {quantity} unidades de {display_name(selected_product)} en el inventario.",
+                "data": {
+                    "name": display_name(selected_product),
+                    "quantity": int(quantity),
+                    "resolved_from_pending_selection": True,
+                },
+            }
+
+        pending_items = pending.get("items") or []
+        if not pending_items:
+            return None
+
+        base_item = dict(pending_items[0])
+        base_item["product_name"] = display_name(selected_product)
+        base_item["product_search_keys"] = product_search_keys(selected_product)
 
         return {
             "intent": "create_purchase_order",
             "reply": f"Registro el pedido usando {display_name(selected_product)}.",
             "data": {
                 "supplier_name": pending.get("supplier_name"),
-                "items": [
-                    {
-                        "product_name": display_name(selected_product),
-                        "quantity": pending.get("quantity"),
-                        "product_search_keys": product_search_keys(selected_product),
-                    }
-                ],
+                "items": [base_item],
                 "resolved_from_pending_selection": True,
             },
         }
+
+    def _parse_pending_duplicate_update(self, message):
+        pending = (self._context or {}).get("pending_action")
+        if not pending:
+            return None
+
+        normalized_message = normalize_text(message).strip()
+        if normalized_message not in {"actualiza", "actualizar", "actualizalo", "actualizala", "si actualiza"}:
+            return None
+
+        if pending.get("intent") == "duplicate_create_product":
+            update_data = dict(pending.get("update_data") or {})
+            if not update_data.get("name"):
+                return None
+            return {
+                "intent": "update_product",
+                "reply": f"Actualizo el producto {update_data['name']}.",
+                "data": update_data,
+            }
+
+        if pending.get("intent") == "duplicate_create_supplier":
+            update_data = dict(pending.get("update_data") or {})
+            if not update_data.get("name"):
+                return None
+            return {
+                "intent": "update_supplier",
+                "reply": f"Actualizo el proveedor {update_data['name']}.",
+                "data": update_data,
+            }
+
+        return None
 
     def _parse_supplier_details(self, message):
         match = re.search(
@@ -1120,11 +1217,11 @@ class MockLLMProvider(BaseLLMProvider):
     def _parse_create_purchase_order(self, message):
         patterns = [
             r"(?:crea|crear|registra|registrar)(?:me)? un pedido al proveedor (?P<supplier>.+?) "
-            r"de (?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+            r"de (?P<quantity>\d+) (?:unidades?(?: de)? )?(?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
             r"(?:haz|hacer|crea|crear|registra|registrar)(?:me)? un pedido a (?P<supplier>.+?) "
-            r"de (?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+            r"de (?P<quantity>\d+) (?:unidades?(?: de)? )?(?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
             r"(?:pide|pedir)(?:me)? a (?P<supplier>.+?) "
-            r"(?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+            r"(?P<quantity>\d+) (?:unidades?(?: de)? )?(?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
         ]
         for pattern in patterns:
             match = re.search(pattern, message)
@@ -1374,10 +1471,11 @@ class OpenAIProvider(BaseLLMProvider):
             return fallback_result("OpenAI", user_message, context, "sin clave OpenAI")
 
         model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        contextual_message = build_contextual_user_message(user_message, context)
         payload = {
             "model": model,
             "instructions": SYSTEM_PROMPT,
-            "input": user_message,
+            "input": contextual_message,
             "max_output_tokens": 450,
             "text": {
                 "format": {
@@ -1418,9 +1516,10 @@ class GeminiProvider(BaseLLMProvider):
 
         model = self.model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        contextual_message = build_contextual_user_message(user_message, context)
         structured_payload = {
             "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "contents": [{"parts": [{"text": user_message}]}],
+            "contents": [{"parts": [{"text": contextual_message}]}],
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "responseJsonSchema": RESPONSE_SCHEMA,
@@ -1439,7 +1538,7 @@ class GeminiProvider(BaseLLMProvider):
                     }
                 ]
             },
-            "contents": [{"parts": [{"text": user_message}]}],
+            "contents": [{"parts": [{"text": contextual_message}]}],
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "temperature": 0.1,
@@ -1478,10 +1577,11 @@ class ClaudeProvider(BaseLLMProvider):
             return fallback_result("Claude", user_message, context, "sin clave Claude")
 
         model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
+        contextual_message = build_contextual_user_message(user_message, context)
         payload = {
             "model": model,
             "system": SYSTEM_PROMPT,
-            "messages": [{"role": "user", "content": user_message}],
+            "messages": [{"role": "user", "content": contextual_message}],
             "max_tokens": 450,
             "temperature": 0.1,
         }
@@ -1517,10 +1617,11 @@ class LocalLLMProvider(BaseLLMProvider):
             return result
 
         model = os.getenv("LOCAL_LLM_MODEL", "llama3.1:8b")
+        contextual_message = build_contextual_user_message(user_message, context)
         payload = {
             "model": model,
             "system": SYSTEM_PROMPT,
-            "prompt": user_message,
+            "prompt": contextual_message,
             "stream": False,
             "format": "json",
             "options": {"temperature": 0.1},

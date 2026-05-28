@@ -8,7 +8,9 @@ class WasteRecord(Document):
 
     product = ReferenceField(Product, required=True)
     quantity = IntField(required=True, min_value=1)
-    reason = StringField(required=True, choices=["caducidad", "producto dañado", "ajuste manual"])
+    reason = StringField(
+        required=True,
+        choices=["caducidad", "producto dañado", "producto daÃ±ado", "ajuste manual", "deterioro", "obsolescencia"],
+    )
     date = DateTimeField()
     economic_loss = DecimalField(required=True, precision=2, min_value=0)
-

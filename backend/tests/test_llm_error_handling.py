@@ -39,6 +39,23 @@ class LLMErrorHandlingTests(unittest.TestCase):
         post_mock.assert_called_once()
         self.assertTrue(post_mock.call_args.args[0].endswith("/api/generate"))
 
+    @patch.dict(os.environ, {"LOCAL_LLM_URL": "http://localhost:11434", "LOCAL_LLM_MODEL": "llama3.1:8b"}, clear=False)
+    @patch("apps.llm_agent.providers.requests.post")
+    def test_local_provider_includes_conversation_context_in_prompt(self, post_mock):
+        post_mock.return_value = Mock(
+            raise_for_status=Mock(),
+            json=Mock(return_value={"response": '{"intent":"create_purchase_order","reply":"Registro pedido.","data":{}}'}),
+        )
+
+        LocalLLMProvider().generate_response(
+            "Créale un pedido de 20 Filtro HEPA",
+            {"last_supplier_name": "Pepito"},
+        )
+
+        prompt = post_mock.call_args.kwargs["json"]["prompt"]
+        self.assertIn("ultimo_proveedor: Pepito", prompt)
+        self.assertIn("Créale un pedido de 20 Filtro HEPA", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

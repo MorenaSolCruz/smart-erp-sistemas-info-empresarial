@@ -5,6 +5,8 @@ from mongoengine.errors import NotUniqueError, ValidationError
 
 from apps.suppliers.models import Supplier
 
+SUPPLIER_FIELDS = ["name", "contact_email", "tax_id", "phone", "address", "products_supplied"]
+
 
 def normalize_lookup(value):
     value = unicodedata.normalize("NFD", str(value or "").strip().lower())
@@ -39,6 +41,31 @@ def serialize_supplier(supplier):
     }
 
 
+def sanitize_supplier_payload(data, include_defaults=False):
+    payload = dict(data or {})
+    if "cif" in payload and "tax_id" not in payload:
+        payload["tax_id"] = payload["cif"]
+
+    normalized = {}
+    for field in SUPPLIER_FIELDS:
+        if field in payload:
+            normalized[field] = payload[field]
+
+    if include_defaults:
+        normalized.setdefault("contact_email", "")
+        normalized.setdefault("tax_id", "")
+        normalized.setdefault("phone", "")
+        normalized.setdefault("address", "")
+        normalized.setdefault("products_supplied", [])
+
+    return normalized
+
+
+def supplier_changed_fields(supplier, data):
+    normalized = sanitize_supplier_payload(data)
+    return [field for field, value in normalized.items() if getattr(supplier, field) != value]
+
+
 def list_suppliers():
     return [serialize_supplier(supplier) for supplier in Supplier.objects.order_by("name")]
 
@@ -63,39 +90,64 @@ def get_supplier_document_by_name(name):
 
 
 def create_supplier(data):
+    normalized_data = sanitize_supplier_payload(data, include_defaults=True)
     existing_supplier = Supplier.objects(name__iexact=data["name"]).first()
     if not existing_supplier:
         matches = resolve_supplier_matches(data["name"])
         if len(matches) == 1:
             existing_supplier = matches[0]
     if existing_supplier:
-        return update_supplier(str(existing_supplier.id), data)
+        changed_fields = supplier_changed_fields(existing_supplier, normalized_data)
+        if not changed_fields:
+            return {
+                **serialize_supplier(existing_supplier),
+                "_sync_status": "already_exists",
+                "_changed_fields": [],
+            }
+        return update_supplier(
+            str(existing_supplier.id),
+            normalized_data,
+            sync_status="updated_existing",
+            changed_fields=changed_fields,
+        )
 
     now = datetime.utcnow()
     supplier = Supplier(
-        name=data["name"],
-        contact_email=data["contact_email"],
-        tax_id=data.get("tax_id", ""),
-        phone=data.get("phone", ""),
-        address=data.get("address", ""),
-        products_supplied=data.get("products_supplied", []),
+        name=normalized_data["name"],
+        contact_email=normalized_data["contact_email"],
+        tax_id=normalized_data.get("tax_id", ""),
+        phone=normalized_data.get("phone", ""),
+        address=normalized_data.get("address", ""),
+        products_supplied=normalized_data.get("products_supplied", []),
         created_at=now,
         updated_at=now,
     )
     supplier.save()
-    return serialize_supplier(supplier)
+    return {**serialize_supplier(supplier), "_sync_status": "created", "_changed_fields": []}
 
 
-def update_supplier(supplier_id, data):
+def update_supplier(supplier_id, data, sync_status="updated", changed_fields=None):
     supplier = Supplier.objects.get(id=supplier_id)
+    normalized_data = sanitize_supplier_payload(data)
+    changed_fields = changed_fields if changed_fields is not None else supplier_changed_fields(supplier, normalized_data)
 
-    for field in ["name", "contact_email", "tax_id", "phone", "address", "products_supplied"]:
-        if field in data:
-            setattr(supplier, field, data[field])
+    if not changed_fields:
+        return {
+            **serialize_supplier(supplier),
+            "_sync_status": "unchanged",
+            "_changed_fields": [],
+        }
+
+    for field in changed_fields:
+        setattr(supplier, field, normalized_data[field])
 
     supplier.updated_at = datetime.utcnow()
     supplier.save()
-    return serialize_supplier(supplier)
+    return {
+        **serialize_supplier(supplier),
+        "_sync_status": sync_status,
+        "_changed_fields": changed_fields,
+    }
 
 
 def delete_supplier(supplier_id):
