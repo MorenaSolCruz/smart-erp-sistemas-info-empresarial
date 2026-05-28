@@ -36,6 +36,42 @@ function chartPoint(x, y) {
   return `${Number(x).toFixed(2)},${Number(y).toFixed(2)}`;
 }
 
+function shortId(value) {
+  const text = String(value ?? "");
+  return text.length > 10 ? text.slice(0, 8) : text;
+}
+
+function formatDate(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatOrderItems(items) {
+  return (
+    <div className="line-items">
+      {items.map((item, index) => (
+        <div className="line-item" key={`${item.product_id || item.product_name}-${index}`}>
+          <strong>{item.product_name || "Producto"}</strong>
+          <span>{formatNumber(item.quantity)} uds.</span>
+          <small>{formatNumber(item.unit_price)} EUR/u</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DonutChart({ title, rows, labelKey, valueKey }) {
   if (!rows?.length) {
     return (
@@ -215,7 +251,8 @@ function DataTable({ title, rows }) {
     );
   }
 
-  const columns = Object.keys(rows[0]);
+  const hiddenColumns = new Set(["supplier_id", "product_id"]);
+  const columns = Object.keys(rows[0]).filter((column) => !hiddenColumns.has(column));
   const columnLabels = {
     id: "ID",
     name: "Nombre",
@@ -228,6 +265,7 @@ function DataTable({ title, rows }) {
     created_at: "Creado",
     updated_at: "Actualizado",
     contact_email: "Email",
+    tax_id: "CIF",
     phone: "Telefono",
     address: "Direccion",
     products_supplied: "Productos",
@@ -253,18 +291,46 @@ function DataTable({ title, rows }) {
     entity_name: "Entidad",
     summary: "Resumen",
     enabled: "Activo",
+    threshold: "Umbral",
+    products_count: "Productos",
+    total_units: "Unidades",
+    inventory_value: "Valor inventario",
+    out_of_stock_count: "Agotados",
+    low_stock_count: "Stock bajo",
+    deleted_count: "Registros eliminados",
+    orders_deleted: "Pedidos eliminados",
+    waste_deleted: "Desechos eliminados",
   };
   const formatValue = (value) => {
     if (Array.isArray(value)) {
-      return value.map((item) => (typeof item === "object" ? JSON.stringify(item) : item)).join(" | ");
+      if (value.every((item) => item && typeof item === "object" && "product_name" in item)) {
+        return formatOrderItems(value);
+      }
+      return value.map((item) => (typeof item === "object" ? Object.values(item).join(" ") : item)).join(", ");
     }
     if (value && typeof value === "object") {
-      return JSON.stringify(value);
+      return Object.entries(value)
+        .map(([key, entryValue]) => `${key}: ${entryValue}`)
+        .join(", ");
     }
     if (typeof value === "number") {
       return formatNumber(value);
     }
     return String(value ?? "");
+  };
+
+  const cellValue = (column, value) => {
+    if (column === "id" || column.endsWith("_id")) {
+      return (
+        <span className="short-id" title={String(value ?? "")}>
+          {shortId(value)}
+        </span>
+      );
+    }
+    if (column.endsWith("_at") || column === "date" || column === "timestamp") {
+      return formatDate(value);
+    }
+    return formatValue(value);
   };
 
   return (
@@ -283,7 +349,7 @@ function DataTable({ title, rows }) {
             {rows.map((row, index) => (
               <tr key={index}>
                 {columns.map((column) => (
-                  <td key={column}>{formatValue(row[column])}</td>
+                  <td key={column}>{cellValue(column, row[column])}</td>
                 ))}
               </tr>
             ))}

@@ -17,19 +17,25 @@ ALLOWED_INTENTS = {
     "update_product",
     "delete_product",
     "delete_all_products",
+    "query_products",
     "get_product_stock",
     "list_suppliers",
     "create_supplier",
     "update_supplier",
     "delete_supplier",
+    "delete_all_suppliers",
     "list_purchase_orders",
     "create_purchase_order",
     "update_purchase_order",
     "delete_purchase_order",
+    "query_purchase_orders",
+    "complete_purchase_order",
+    "cancel_latest_purchase_order",
     "list_waste",
     "create_waste",
     "update_waste",
     "delete_waste",
+    "delete_all_waste",
     "show_statistics",
     "show_audit_history",
     "configure_auto_replenishment",
@@ -77,18 +83,20 @@ Intenciones permitidas:
 - missing_data
 - fallback
 - list_products, create_product, add_product_stock, update_product, delete_product, delete_all_products
+- query_products para filtros, ordenaciones y analitica de inventario
 - get_product_stock para preguntas como "cuantos monitores tengo" o "stock de Filtro HEPA"
 - list_suppliers, create_supplier, update_supplier, delete_supplier
-- list_purchase_orders, create_purchase_order, update_purchase_order, delete_purchase_order
-- list_waste, create_waste, update_waste, delete_waste
+- list_purchase_orders, create_purchase_order, update_purchase_order, delete_purchase_order, query_purchase_orders
+- complete_purchase_order y cancel_latest_purchase_order
+- list_waste, create_waste, update_waste, delete_waste, delete_all_waste
 - show_statistics
 - show_audit_history para trazabilidad y auditoria
 - configure_auto_replenishment para activar o desactivar la reposicion automatica
 
 Reglas de seguridad:
 - Para eliminar un producto, proveedor, pedido o desecho concreto, usa delete_* directamente.
-- Solo pide confirmation_required si el usuario quiere eliminar todo el inventario, todo el almacen,
-  todos los productos o todos los registros de productos.
+- Solo pide confirmation_required si el usuario quiere eliminar todo el inventario, todos los proveedores,
+  todos los desechos o todos los registros de una entidad.
 - Si faltan campos obligatorios, usa missing_data.
 - Si la intencion no es clara, usa fallback.
 - Si el usuario pregunta que puedes hacer, ejemplos, ayuda, comandos o capacidades, usa help.
@@ -105,16 +113,22 @@ Campos esperados por intencion:
 - update_product: data.name y al menos uno de new_name, stock, unit_price, category, minimum_stock.
 - delete_product: data.name.
 - delete_all_products: data debe ser {}.
+- query_products: data.kind y opcionalmente data.limit, data.threshold, data.search.
 - get_product_stock: data.name.
 - create_supplier: data.name, data.contact_email. Opcionales: phone, address, products_supplied.
 - update_supplier: data.name y al menos uno de new_name, contact_email, phone, address.
 - delete_supplier: data.name.
+- delete_all_suppliers: data debe ser {}.
 - create_purchase_order: data.supplier_name, data.items. Cada item necesita product_name y quantity. unit_price opcional.
 - update_purchase_order: data.id, data.supplier_name, data.items. status opcional.
 - delete_purchase_order: data.id.
+- query_purchase_orders: data.kind.
+- complete_purchase_order: data.id.
+- cancel_latest_purchase_order: data debe ser {}.
 - create_waste: data.product_name, data.quantity, data.reason. reason debe ser caducidad, producto dañado o ajuste manual.
 - update_waste: data.id, data.product_name, data.quantity, data.reason.
 - delete_waste: data.id.
+- delete_all_waste: data debe ser {}.
 - show_audit_history: data.audit_scope, data.limit y segun el caso data.supplier_name.
 - configure_auto_replenishment: data.enabled con valor true o false.
 - list_* y show_statistics: data debe ser {}.
@@ -150,6 +164,10 @@ def normalize_text(value):
     return "".join(char for char in value if unicodedata.category(char) != "Mn")
 
 
+def squash_text(value):
+    return " ".join(value.replace("\r", " ").replace("\n", " ").split())
+
+
 def display_name(value):
     acronyms = {"api", "erp", "hepa", "llm", "sku"}
     return " ".join(word.upper() if word in acronyms else word.capitalize() for word in value.strip().split())
@@ -163,6 +181,10 @@ def decimal_value(value, default=0):
 
 def clean_identifier(value):
     return value.strip().strip(".:,;")
+
+
+def clean_product_name(value):
+    return display_name(re.sub(r"^(?:a|al|de|del)\s+", "", value.strip()))
 
 
 def extract_json_object(text):
@@ -243,11 +265,11 @@ def integer_from_text(value):
 
 def compact_product_name(value):
     value = re.sub(
-        r"\b(y|con|de|del|al|a|el|la|los|las|un|una|unas|unos|producto|productos|precio|precios|stock|unidades|unidad|inventario|cuesta|vale)\b",
+        r"\b(y|con|de|del|al|a|el|la|los|las|un|una|unas|unos|producto|productos|llamado|llamada|precio|precios|stock|unidades|unidad|inventario|cuesta|vale)\b",
         " ",
         value,
     )
-    value = re.sub(r"\d+(?:[.,]\d+)?", " ", value)
+    value = re.sub(r"(?<![a-z0-9])\d+(?:[.,]\d+)?(?![a-z0-9])", " ", value)
     return " ".join(value.split()).strip()
 
 
@@ -256,7 +278,7 @@ class MockLLMProvider(BaseLLMProvider):
 
     def generate_response(self, user_message, context):
         self._context = context or {}
-        raw_message = user_message.strip()
+        raw_message = squash_text(user_message)
         confirmed_action = parse_confirmation_token(raw_message)
         if confirmed_action:
             return confirmed_action
@@ -267,6 +289,9 @@ class MockLLMProvider(BaseLLMProvider):
         audit_request = self._parse_audit_history_request(lowered)
         if audit_request:
             return audit_request
+        operational_query = self._parse_operational_query(lowered)
+        if operational_query:
+            return operational_query
 
         if self._is_statistics_request(lowered):
             return {"intent": "show_statistics", "reply": "Consulto las estadísticas del ERP."}
@@ -299,11 +324,11 @@ class MockLLMProvider(BaseLLMProvider):
 
         for parser in [
             self._parse_quick_inventory_add,
-            self._parse_flexible_create_product,
-            self._parse_product_stock_question,
             self._parse_create_product,
+            self._parse_flexible_create_product,
             self._parse_update_product,
             self._parse_delete_product,
+            self._parse_delete_all_suppliers,
             self._parse_create_supplier,
             self._parse_update_supplier,
             self._parse_delete_supplier,
@@ -311,9 +336,13 @@ class MockLLMProvider(BaseLLMProvider):
             self._parse_create_purchase_order,
             self._parse_update_purchase_order,
             self._parse_delete_purchase_order,
+            self._parse_complete_purchase_order,
+            self._parse_cancel_latest_purchase_order,
             self._parse_create_waste,
             self._parse_update_waste,
+            self._parse_delete_all_waste,
             self._parse_delete_waste,
+            self._parse_product_stock_question,
         ]:
             parsed = parser(lowered)
             if parsed:
@@ -348,27 +377,69 @@ class MockLLMProvider(BaseLLMProvider):
         return display_name((self._context or {}).get("last_supplier_name", "").strip()) if (self._context or {}).get("last_supplier_name") else None
 
     def _parse_auto_replenishment_config(self, message):
-        if not any(term in message for term in ["reposicion", "reabastecimiento", "pedido automatico", "pedidos automaticos"]):
+        if not any(term in message for term in ["reposicion", "reabastecimiento", "pedido automatico", "pedidos automaticos", "genera automaticamente pedidos", "alertas automaticas", "automatizaciones"]):
             return None
 
-        if any(term in message for term in ["activa", "activar", "habilita", "habilitar", "enciende"]):
-            return {
-                "intent": "configure_auto_replenishment",
-                "reply": "Activo la reposicion automatica de pedidos por stock bajo.",
-                "data": {"enabled": True},
-            }
-
+        threshold_match = re.search(r"menos de (?P<threshold>\d+) unidades", message)
+        threshold = int(threshold_match.group("threshold")) if threshold_match else None
         if any(term in message for term in ["desactiva", "desactivar", "deshabilita", "deshabilitar", "apaga"]):
             return {
                 "intent": "configure_auto_replenishment",
                 "reply": "Desactivo la reposicion automatica de pedidos.",
-                "data": {"enabled": False},
+                "data": {"enabled": False, "threshold": threshold},
+            }
+
+        if any(term in message for term in ["activa", "activar", "habilita", "habilitar", "enciende", "genera automaticamente"]):
+            return {
+                "intent": "configure_auto_replenishment",
+                "reply": "Activo la reposicion automatica de pedidos por stock bajo.",
+                "data": {"enabled": True, "threshold": threshold},
             }
 
         return None
 
+    def _parse_operational_query(self, message):
+        if "menos de" in message and "unidades" in message and ("producto" in message or "stock" in message):
+            threshold_match = re.search(r"menos de (?P<threshold>\d+) unidades", message)
+            return {
+                "intent": "query_products",
+                "reply": "Consulto productos por debajo del umbral indicado.",
+                "data": {"kind": "low_stock", "threshold": int(threshold_match.group("threshold")) if threshold_match else 5},
+            }
+        if "grafica" in message and "producto" in message and ("menos stock" in message or "menor stock" in message):
+            return {"intent": "show_statistics", "reply": "Genero una vista grafica de los productos con menor stock.", "data": {}}
+        if "mas stock" in message or "mayor stock" in message:
+            return {"intent": "query_products", "reply": "Consulto el producto con mas stock.", "data": {"kind": "most_stock"}}
+        if "precio descendente" in message or "por precio descendente" in message:
+            return {"intent": "query_products", "reply": "Ordeno los productos por precio descendente.", "data": {"kind": "price_desc"}}
+        contains_match = re.search(r"(?:contenga|contengan|contiene|contengan nombre|nombre contenga) [\"“']?(?P<search>.+?)[\"”']?$", message)
+        if contains_match and "producto" in message:
+            return {
+                "intent": "query_products",
+                "reply": "Busco productos por nombre.",
+                "data": {"kind": "name_contains", "search": contains_match.group("search").strip()},
+            }
+        if "inventario total" in message or "valor economico total" in message or "vale el inventario" in message or "valor del almacen" in message:
+            return {"intent": "query_products", "reply": "Calculo el valor economico del inventario.", "data": {"kind": "inventory_value"}}
+        if "agotado" in message or "agotados" in message or "sin stock" in message:
+            return {"intent": "query_products", "reply": "Consulto productos agotados.", "data": {"kind": "out_of_stock"}}
+        expensive_match = re.search(r"(?P<limit>\d+) productos mas caros", message)
+        if expensive_match or "productos mas caros" in message:
+            return {
+                "intent": "query_products",
+                "reply": "Consulto los productos mas caros.",
+                "data": {"kind": "top_expensive", "limit": int(expensive_match.group("limit")) if expensive_match else 10},
+            }
+        if "resumen del inventario" in message or "inventario actual" in message:
+            return {"intent": "query_products", "reply": "Preparo un resumen del inventario actual.", "data": {"kind": "summary"}}
+        if "pedidos pendientes" in message:
+            return {"intent": "query_purchase_orders", "reply": "Consulto los pedidos pendientes.", "data": {"kind": "pending"}}
+        if "proveedor" in message and ("mas pedidos" in message or "mas utilizado" in message or "más utilizado" in message):
+            return {"intent": "query_purchase_orders", "reply": "Consulto el proveedor con mas pedidos.", "data": {"kind": "top_supplier"}}
+        return None
+
     def _parse_audit_history_request(self, message):
-        if not any(term in message for term in ["accion", "acciones", "trazabilidad", "auditoria", "audit", "eliminad"]):
+        if not re.search(r"\b(accion|acciones|trazabilidad|auditoria|audit|eliminado|eliminados|borrado|borrados)\b", message):
             return None
 
         limit_match = re.search(r"(?P<limit>\d+)", message)
@@ -407,9 +478,11 @@ class MockLLMProvider(BaseLLMProvider):
         return None
 
     def _parse_dangerous_inventory_delete(self, message):
-        if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vaciar", "limpiar"]):
+        if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vacia", "vaciar", "limpia", "limpiar"]):
             return None
         if not any(term in message for term in ["todo", "todos", "toda", "inventario", "almacen", "almacen", "productos"]):
+            return None
+        if "proveedor" in message or "desecho" in message:
             return None
         if message.startswith("confirma ") or message in ["si", "sí", "s"]:
             return None
@@ -422,7 +495,7 @@ class MockLLMProvider(BaseLLMProvider):
     def _is_confirmed_inventory_delete(self, message):
         return (
             message.startswith("confirma ")
-            and any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vaciar", "limpiar"])
+            and any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vacia", "vaciar", "limpia", "limpiar"])
             and any(term in message for term in ["todo", "todos", "toda", "inventario", "almacen", "productos"])
         )
 
@@ -452,7 +525,7 @@ class MockLLMProvider(BaseLLMProvider):
         )
         if not match:
             return None
-        name = re.sub(r"\b(tengo|hay|quedan|en inventario|producto|productos|unidades)\b", "", match.group("name")).strip()
+        name = re.sub(r"\b(tengo|hay|quedan|en inventario|producto|productos|unidades|unidad|de|del|a|al)\b", "", match.group("name")).strip()
         if not name or name in ["producto", "productos", "inventario", "stock"]:
             return None
         return {
@@ -463,14 +536,14 @@ class MockLLMProvider(BaseLLMProvider):
 
     def _parse_quick_inventory_add(self, message):
         match = re.search(
-            r"(?:introduce|introducir|meter|agregar|anadir|añadir|sumar|registrar) (?P<name>.+?) "
+            r"(?:introduce|introducir|mete|meter|agrega|agregar|anade|anadir|añade|añadir|suma|sumar|registra|registrar) (?P<name>.+?) "
             r"(?:en|al|a el)? ?inventario[, ]+(?P<stock>\d+)(?: unidades)?(?: concretamente)?$",
             message,
         )
         if not match:
             match = re.search(
-                r"(?:introduce|introducir|meter|agregar|anadir|añadir|sumar|registrar) (?P<stock>\d+) "
-                r"(?:unidades de )?(?P<name>.+?)(?: al inventario| en inventario)?$",
+                r"(?:introduce|introducir|mete|meter|agrega|agregar|anade|anadir|añade|añadir|suma|sumar|registra|registrar) (?P<stock>\d+) "
+                r"(?:unidades? )?(?:mas )?(?:de|a|al)? ?(?P<name>.+?)(?: al inventario| en inventario)?$",
                 message,
             )
         if not match:
@@ -479,8 +552,14 @@ class MockLLMProvider(BaseLLMProvider):
                 message,
             )
         if not match:
+            match = re.search(
+                r"(?:introduce|introducir|mete|meter|agrega|agregar|anade|anadir|añade|añadir|suma|sumar|registra|registrar) "
+                r"(?:al|a el|en el)? ?inventario (?P<name>.+?) (?P<stock>\d+)(?: unidades?)?$",
+                message,
+            )
+        if not match:
             return None
-        name = display_name(match.group("name"))
+        name = clean_product_name(match.group("name"))
         stock = int(match.group("stock"))
         return {
             "intent": "add_product_stock",
@@ -528,8 +607,34 @@ class MockLLMProvider(BaseLLMProvider):
         }
 
     def _parse_create_product(self, message):
+        if any(message.startswith(prefix) for prefix in ["crea producto ", "crear producto ", "registra producto ", "registrar producto "]):
+            price_match = re.search(r"precio (?P<price>\d+(?:[.,]\d+)?)", message)
+            stock_match = re.search(r"stock (?P<stock>\d+)", message)
+            category_match = re.search(r"categoria (?P<category>.+)$", message)
+            name = re.sub(r"^(?:crea|crear|registra|registrar) producto\s+", "", message)
+            name = re.sub(r"\s+con\s+.*$", "", name).strip()
+            missing = []
+            if not stock_match:
+                missing.append("stock")
+            if not price_match:
+                missing.append("precio")
+            if missing:
+                return {
+                    "intent": "missing_data",
+                    "reply": f"Faltan datos obligatorios para crear el producto: {', '.join(missing)}.",
+                }
+            data = {
+                "name": display_name(name),
+                "stock": int(stock_match.group("stock")),
+                "unit_price": decimal_value(price_match.group("price")),
+                "description": "",
+                "category": display_name(category_match.group("category")) if category_match else "",
+                "minimum_stock": 0,
+            }
+            return {"intent": "create_product", "reply": f"Creo el producto {data['name']}.", "data": data}
+
         match = re.search(
-            r"(?:crea|crear|registra|registrar) un producto llamado (?P<name>.+?)"
+            r"(?:crea|crear|registra|registrar) (?:un )?producto(?: llamado)? (?P<name>.+?)"
             r"(?: con descripcion (?P<description>.+?))?"
             r"(?: en categoria (?P<category>.+?))?"
             r"(?: con stock (?P<stock>\d+))?"
@@ -539,6 +644,7 @@ class MockLLMProvider(BaseLLMProvider):
         )
         if not match:
             return None
+
         data = product_payload(match)
         missing = []
         if match.group("stock") is None:
@@ -599,15 +705,17 @@ class MockLLMProvider(BaseLLMProvider):
 
     def _parse_create_supplier(self, message):
         match = re.search(
-            r"(?:registra|registrar|crea|crear) un proveedor llamado (?P<name>.+?)"
-            r"(?: con email (?P<email>\S+))?"
-            r"(?: y telefono (?P<phone>[\d+ ]+))?"
-            r"(?: y direccion (?P<address>.+))?$",
+            r"(?:registra|registrar|crea|crear) un proveedor(?: llamado)? (?P<name>.+?)"
+            r"(?:\s+(?:con\s+)?(?:email|correo|cif|nif|tax id|telefono|teléfono|direccion|dirección)\b|$)",
             message,
         )
         if not match:
             return None
-        if not match.group("email"):
+        email_match = re.search(r"(?:email|correo)\s+(?P<email>[^\s,;]+@[^\s,;]+)", message)
+        tax_match = re.search(r"(?:cif|nif|tax id)\s+(?P<tax>[a-z0-9-]+)", message)
+        phone_match = re.search(r"(?:telefono|teléfono|tlf)\s+(?P<phone>[\d+ ]+)", message)
+        address_match = re.search(r"(?:direccion|dirección)\s+(?P<address>.+?)(?:\s+y?\s*(?:email|correo|cif|nif|tax id|telefono|teléfono)\b|$)", message)
+        if not email_match:
             return {
                 "intent": "missing_data",
                 "reply": "Falta el email del proveedor. Ejemplo: registra un proveedor llamado ClimaSur con email contacto@climasur.com.",
@@ -618,33 +726,45 @@ class MockLLMProvider(BaseLLMProvider):
             "reply": f"Registro el proveedor {name}.",
             "data": {
                 "name": name,
-                "contact_email": match.group("email") or "proveedor@example.com",
-                "phone": (match.group("phone") or "").strip(),
-                "address": match.group("address") or "",
+                "contact_email": email_match.group("email").strip(),
+                "tax_id": (tax_match.group("tax") if tax_match else "").upper(),
+                "phone": (phone_match.group("phone") if phone_match else "").strip(),
+                "address": (address_match.group("address") if address_match else "").strip(),
                 "products_supplied": [],
             },
         }
 
     def _parse_update_supplier(self, message):
+        phone_only = re.search(r"(?:actualiza|actualizar|modifica|modificar) (?:el )?telefono de (?P<name>.+?) a (?P<phone>[\d+ ]+)$", message)
+        if phone_only:
+            return {
+                "intent": "update_supplier",
+                "reply": f"Actualizo el proveedor {display_name(phone_only.group('name'))}.",
+                "data": {"name": display_name(phone_only.group("name")), "phone": phone_only.group("phone").strip()},
+            }
         match = re.search(
             r"(?:actualiza|actualizar|modifica|modificar) (?:el )?proveedor (?P<name>.+?)"
-            r"(?: con nombre (?P<new_name>.+?))?"
-            r"(?: con email (?P<email>\S+))?"
-            r"(?: y telefono (?P<phone>[\d+ ]+))?"
-            r"(?: y direccion (?P<address>.+))?$",
+            r"(?:\s+(?:con\s+)?(?:nombre|email|correo|cif|nif|tax id|telefono|teléfono|direccion|dirección)\b|$)",
             message,
         )
         if not match:
             return None
         data = {"name": display_name(match.group("name"))}
-        if match.group("new_name"):
-            data["new_name"] = display_name(match.group("new_name"))
-        if match.group("email"):
-            data["contact_email"] = match.group("email")
-        if match.group("phone"):
-            data["phone"] = match.group("phone").strip()
-        if match.group("address"):
-            data["address"] = match.group("address")
+        new_name_match = re.search(r"(?:nombre)\s+(?P<new_name>.+?)(?:\s+(?:con\s+)?(?:email|correo|cif|nif|tax id|telefono|teléfono|direccion|dirección)\b|$)", message)
+        email_match = re.search(r"(?:email|correo)\s+(?P<email>[^\s,;]+@[^\s,;]+)", message)
+        tax_match = re.search(r"(?:cif|nif|tax id)\s+(?P<tax>[a-z0-9-]+)", message)
+        phone_match = re.search(r"(?:telefono|teléfono|tlf)\s+(?P<phone>[\d+ ]+)", message)
+        address_match = re.search(r"(?:direccion|dirección)\s+(?P<address>.+?)(?:\s+y?\s*(?:email|correo|cif|nif|tax id|telefono|teléfono)\b|$)", message)
+        if new_name_match:
+            data["new_name"] = display_name(new_name_match.group("new_name"))
+        if email_match:
+            data["contact_email"] = email_match.group("email")
+        if tax_match:
+            data["tax_id"] = tax_match.group("tax").upper()
+        if phone_match:
+            data["phone"] = phone_match.group("phone").strip()
+        if address_match:
+            data["address"] = address_match.group("address").strip()
         if len(data) == 1:
             return {
                 "intent": "missing_data",
@@ -658,6 +778,17 @@ class MockLLMProvider(BaseLLMProvider):
             return None
         name = display_name(match.group("name"))
         return {"intent": "delete_supplier", "reply": f"Elimino el proveedor {name}.", "data": {"name": name}}
+
+    def _parse_delete_all_suppliers(self, message):
+        if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar"]):
+            return None
+        if not ("proveedor" in message and any(term in message for term in ["todo", "todos"])):
+            return None
+        return {
+            "intent": "confirmation_required",
+            "reply": "Esta accion eliminara todos los proveedores sin pedidos asociados. Quieres continuar? Responde si o no.",
+            "data": {"pending_action": "delete_all_suppliers", "confirmation_token": confirmation_token("delete_all_suppliers", "Elimino todos los proveedores.", {})},
+        }
 
     def _parse_create_purchase_order(self, message):
         match = re.search(
@@ -681,8 +812,8 @@ class MockLLMProvider(BaseLLMProvider):
         
     def _parse_contextual_purchase_order(self, message):
         match = re.search(
-            r"(?:haz|hacer|crea|crear|registra|registrar)(?:le)? un pedido "
-            r"de (?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+            r"(?:haz|hacer|crea|crear|creale|registra|registrar)(?:le)? un pedido "
+            r"de (?P<quantity>\d+)(?: unidades(?: de)? )?(?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
             message,
         )
         if not match:
@@ -708,7 +839,7 @@ class MockLLMProvider(BaseLLMProvider):
 
     def _parse_update_purchase_order(self, message):
         match = re.search(
-            r"(?:actualiza|actualizar|modifica|modificar) (?:el )?pedido (?P<id>[a-f0-9]{24}) "
+            r"(?:actualiza|actualizar|modifica|modificar) (?:el )?pedido (?P<id>[a-f0-9]{6,24}) "
             r"al proveedor (?P<supplier>.+?) de (?P<quantity>\d+) unidades de (?P<product>.+?)"
             r"(?: con estado (?P<status>[\w -]+))?$",
             message,
@@ -731,21 +862,32 @@ class MockLLMProvider(BaseLLMProvider):
             },
         }
 
+    def _parse_complete_purchase_order(self, message):
+        match = re.search(r"(?:marca|marcar) (?:el )?pedido (?P<id>[a-f0-9]{1,24}) como completado", message)
+        if not match:
+            return None
+        return {"intent": "complete_purchase_order", "reply": "Marco el pedido como completado.", "data": {"id": clean_identifier(match.group("id"))}}
+
+    def _parse_cancel_latest_purchase_order(self, message):
+        if "ultimo pedido" in message and any(term in message for term in ["cancela", "cancelar", "anula", "anular"]):
+            return {"intent": "cancel_latest_purchase_order", "reply": "Cancelo el ultimo pedido creado.", "data": {}}
+        return None
+
     def _parse_delete_purchase_order(self, message):
-        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el )?pedido (?P<id>[a-f0-9]{24})", message)
+        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el )?pedido (?P<id>[a-f0-9]{6,24})", message)
         if not match:
             return None
         return {"intent": "delete_purchase_order", "reply": "Elimino el pedido indicado.", "data": {"id": clean_identifier(match.group("id"))}}
 
     def _parse_create_waste(self, message):
         match = re.search(
-            r"(?:registra|registrar|crea|crear) un desecho de (?P<quantity>\d+) unidades de (?P<product>.+?) "
-            r"por (?P<reason>caducidad|producto danado|ajuste manual)$",
+            r"(?:registra|registrar|crea|crear) un desecho de (?P<quantity>\d+) unidades de (?P<product>.+?)"
+            r"(?: por (?P<reason>caducidad|producto danado|ajuste manual))?$",
             message,
         )
         if not match:
             return None
-        reason = match.group("reason").replace("danado", "dañado")
+        reason = (match.group("reason") or "ajuste manual").replace("danado", "dañado")
         return {
             "intent": "create_waste",
             "reply": f"Registro el desecho de {display_name(match.group('product'))}.",
@@ -758,7 +900,7 @@ class MockLLMProvider(BaseLLMProvider):
 
     def _parse_update_waste(self, message):
         match = re.search(
-            r"(?:actualiza|actualizar|modifica|modificar) (?:el )?desecho (?P<id>[a-f0-9]{24}) "
+            r"(?:actualiza|actualizar|modifica|modificar) (?:el )?desecho (?P<id>[a-f0-9]{6,24}) "
             r"a (?P<quantity>\d+) unidades de (?P<product>.+?) por (?P<reason>caducidad|producto danado|ajuste manual)$",
             message,
         )
@@ -777,10 +919,21 @@ class MockLLMProvider(BaseLLMProvider):
         }
 
     def _parse_delete_waste(self, message):
-        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el )?desecho (?P<id>[a-f0-9]{24})", message)
+        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el )?desecho (?P<id>[a-f0-9]{6,24})", message)
         if not match:
             return None
         return {"intent": "delete_waste", "reply": "Elimino el desecho indicado.", "data": {"id": clean_identifier(match.group("id"))}}
+
+    def _parse_delete_all_waste(self, message):
+        if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar"]):
+            return None
+        if not ("desecho" in message and any(term in message for term in ["todo", "todos", "registrados"])):
+            return None
+        return {
+            "intent": "confirmation_required",
+            "reply": "Esta accion eliminara todos los desechos registrados. Quieres continuar? Responde si o no.",
+            "data": {"pending_action": "delete_all_waste", "confirmation_token": confirmation_token("delete_all_waste", "Elimino todos los desechos registrados.", {})},
+        }
 
 
 class OpenAIProvider(BaseLLMProvider):

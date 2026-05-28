@@ -1105,6 +1105,7 @@ p {
 
 .table-wrapper {
   overflow-x: auto;
+  scrollbar-width: thin;
 }
 
 table {
@@ -1115,11 +1116,12 @@ table {
 
 th,
 td {
-  max-width: 220px;
+  max-width: 240px;
   padding: 8px;
   text-align: left;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 th {
@@ -1131,6 +1133,56 @@ th {
 
 td {
   color: var(--text);
+}
+
+.short-id {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: 90px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: color-mix(in srgb, var(--text) 90%, var(--accent));
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.line-items {
+  display: grid;
+  gap: 6px;
+  min-width: 170px;
+}
+
+.line-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-strong) 76%, transparent);
+}
+
+.line-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.line-item span {
+  color: var(--accent);
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.line-item small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 
 .kpi-info {

@@ -188,12 +188,13 @@ En el segundo mensaje ya no hace falta repetir el proveedor.
 
 ### Confirmaciones inteligentes
 
-El chat pide confirmacion antes de acciones sensibles como:
+El chat pide confirmacion antes de acciones masivas o especialmente destructivas como:
 
 - vaciar inventario
-- eliminar proveedor
-- modificar pedido existente
-- eliminar pedido
+- borrar todos los proveedores
+- eliminar todos los desechos registrados
+
+Las operaciones sobre registros concretos, como eliminar un proveedor, borrar un pedido o eliminar un producto especifico, se ejecutan directamente por conversacion. Esto mantiene la demo mas fluida y evita pasos innecesarios cuando el usuario ya ha indicado claramente el registro que quiere modificar.
 
 ### Sugerencias proactivas
 
@@ -265,6 +266,9 @@ curl -X POST http://localhost:8000/api/agent/chat/ \
 - `Registra un proveedor llamado ClimaSur con email contacto@climasur.com`
 - `Crea un pedido al proveedor ClimaSur de 10 unidades de Filtro HEPA`
 - `Registra un desecho de 3 unidades de Filtro HEPA por caducidad`
+- `Elimina el proveedor ClimaSur`
+- `Elimina pedido <id corto>`
+- `Elimina producto Filtro HEPA`
 
 ### Memoria operativa
 
@@ -273,11 +277,31 @@ curl -X POST http://localhost:8000/api/agent/chat/ \
 
 ### Confirmaciones inteligentes
 
-- `Elimina el proveedor TecnoSur`
+- `Borra todos los proveedores`
 - responde `si` o `no`
 
 - `Elimina todo el inventario`
 - responde `si` o `no`
+
+- `Elimina todos los desechos registrados`
+- responde `si` o `no`
+
+### Consultas avanzadas
+
+- `Muestrame los productos con menos de 5 unidades`
+- `Que producto tiene mas stock?`
+- `Ordena los productos por precio descendente`
+- `Busca productos cuyo nombre contenga sensor`
+- `Cuanto vale el inventario total?`
+- `Dame los 10 productos mas caros`
+- `Que proveedor tiene mas pedidos?`
+- `Dame un resumen del inventario actual`
+
+### Automatizaciones
+
+- `Activa reposicion automatica para productos con menos de 5 unidades`
+- `Desactiva las alertas automaticas de stock`
+- `Genera automaticamente pedidos cuando un producto se quede sin stock`
 
 ### Reposicion automatica
 

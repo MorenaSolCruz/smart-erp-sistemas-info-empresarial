@@ -25,8 +25,26 @@ def list_purchase_orders():
     return [serialize_purchase_order(order) for order in PurchaseOrder.objects.order_by("-created_at")]
 
 
+def resolve_purchase_order(order_id):
+    order_id = str(order_id).strip()
+    if order_id.isdigit():
+        index = int(order_id) - 1
+        orders = list(PurchaseOrder.objects.order_by("-created_at"))
+        if index < 0 or index >= len(orders):
+            raise PurchaseOrder.DoesNotExist("Pedido no encontrado.")
+        return orders[index]
+    if len(order_id) < 24:
+        matches = [order for order in PurchaseOrder.objects if str(order.id).startswith(order_id)]
+        if not matches:
+            raise PurchaseOrder.DoesNotExist("Pedido no encontrado.")
+        if len(matches) > 1:
+            raise ValidationError("Hay varios pedidos con ese ID corto. Usa algunos caracteres más del ID.")
+        return matches[0]
+    return PurchaseOrder.objects.get(id=order_id)
+
+
 def get_purchase_order_by_id(order_id):
-    return serialize_purchase_order(PurchaseOrder.objects.get(id=order_id))
+    return serialize_purchase_order(resolve_purchase_order(order_id))
 
 
 def create_purchase_order(data):
@@ -77,7 +95,7 @@ def create_purchase_order(data):
 
 
 def update_purchase_order(order_id, data):
-    order = PurchaseOrder.objects.get(id=order_id)
+    order = resolve_purchase_order(order_id)
     supplier = Supplier.objects.get(id=data["supplier_id"])
     normalized_items = []
     total_amount = Decimal("0")
@@ -126,7 +144,7 @@ def update_purchase_order(order_id, data):
 
 
 def delete_purchase_order(order_id):
-    order = PurchaseOrder.objects.get(id=order_id)
+    order = resolve_purchase_order(order_id)
     affected_products = []
     supplier_name = order.supplier.name
     supplier_id = str(order.supplier.id)
@@ -150,3 +168,35 @@ def delete_purchase_order(order_id):
         "supplier_name": supplier_name,
         "affected_products": affected_products,
     }
+
+
+def order_insights(kind):
+    orders = list(PurchaseOrder.objects.order_by("-created_at"))
+    if kind == "pending":
+        return [serialize_purchase_order(order) for order in orders if order.status in ["pending", "created", "open"]]
+    if kind == "top_supplier":
+        totals = {}
+        for order in orders:
+            name = order.supplier.name
+            if name not in totals:
+                totals[name] = {"supplier_name": name, "orders_count": 0, "total_amount": 0.0}
+            totals[name]["orders_count"] += 1
+            totals[name]["total_amount"] += float(order.total_amount)
+        return sorted(totals.values(), key=lambda row: row["orders_count"], reverse=True)[:1]
+    if kind == "latest":
+        return serialize_purchase_order(orders[0]) if orders else None
+    return [serialize_purchase_order(order) for order in orders]
+
+
+def mark_purchase_order_completed(order_id):
+    order = resolve_purchase_order(order_id)
+    order.status = "completed"
+    order.save()
+    return serialize_purchase_order(order)
+
+
+def cancel_latest_purchase_order():
+    latest = order_insights("latest")
+    if not latest:
+        raise PurchaseOrder.DoesNotExist("Pedido no encontrado.")
+    return delete_purchase_order(latest["id"])

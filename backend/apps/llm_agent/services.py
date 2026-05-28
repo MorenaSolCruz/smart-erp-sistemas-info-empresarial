@@ -13,16 +13,21 @@ from apps.products.services import (
     delete_product,
     get_product_document_by_name,
     list_products,
+    product_insights,
     update_product,
 )
 from apps.purchase_orders.services import (
+    cancel_latest_purchase_order,
+    mark_purchase_order_completed,
     create_purchase_order,
     delete_purchase_order,
     list_purchase_orders,
+    order_insights,
     update_purchase_order,
 )
 from apps.statistics.services import statistics_overview
 from apps.suppliers.services import (
+    clear_suppliers,
     create_supplier,
     delete_supplier,
     get_supplier_document_by_name,
@@ -31,6 +36,7 @@ from apps.suppliers.services import (
 )
 from apps.suppliers.models import Supplier
 from apps.waste.services import (
+    clear_waste_records,
     create_waste_record,
     delete_waste_record,
     list_waste_records,
@@ -43,6 +49,7 @@ CONVERSATION_MEMORY = {
     "last_supplier_name": None,
     "last_product_name": None,
     "auto_replenishment_enabled": False,
+    "auto_replenishment_threshold": None,
 }
 
 
@@ -51,6 +58,7 @@ def get_conversation_context():
         "last_supplier_name": CONVERSATION_MEMORY.get("last_supplier_name"),
         "last_product_name": CONVERSATION_MEMORY.get("last_product_name"),
         "auto_replenishment_enabled": CONVERSATION_MEMORY.get("auto_replenishment_enabled", False),
+        "auto_replenishment_threshold": CONVERSATION_MEMORY.get("auto_replenishment_threshold"),
     }
 
 
@@ -64,8 +72,10 @@ def remember_product_name(product_name):
         CONVERSATION_MEMORY["last_product_name"] = product_name
 
 
-def set_auto_replenishment(enabled):
+def set_auto_replenishment(enabled, threshold=None):
     CONVERSATION_MEMORY["auto_replenishment_enabled"] = bool(enabled)
+    if threshold is not None:
+        CONVERSATION_MEMORY["auto_replenishment_threshold"] = int(threshold)
 
 
 def normalize_action_message(message):
@@ -93,19 +103,23 @@ def confirmation_prompt_for(intent, data):
         return "Vas a eliminar un pedido y ajustar el stock asociado. Quieres continuar? Responde si o no."
     if intent == "delete_all_products":
         return "Esta accion eliminara todo el inventario de productos. Quieres eliminarlo? Responde si o no."
+    if intent == "delete_all_suppliers":
+        return "Esta accion eliminara todos los proveedores sin pedidos asociados. Quieres continuar? Responde si o no."
+    if intent == "delete_all_waste":
+        return "Esta accion eliminara todos los desechos registrados. Quieres continuar? Responde si o no."
     return "La accion solicitada requiere confirmacion. Quieres continuar? Responde si o no."
 
 
 def maybe_require_confirmation(message, result):
     intent = result.get("intent")
-    sensitive_intents = {"delete_supplier", "update_purchase_order", "delete_purchase_order", "delete_all_products"}
+    sensitive_intents = {"delete_all_products", "delete_all_suppliers", "delete_all_waste"}
     if intent not in sensitive_intents:
         return None
     if result.get("confirmed"):
         return None
 
     normalized_message = normalize_action_message(message).strip()
-    if intent == "delete_all_products" and normalized_message.startswith("confirma "):
+    if intent in sensitive_intents and normalized_message.startswith("confirma "):
         return None
 
     return {
@@ -227,7 +241,7 @@ def audit_entities_for(action, data):
     def add_related(item_type, name="", item_id=""):
         related_entities.append({"type": item_type, "name": name or "", "id": item_id or ""})
 
-    if action in {"create_product", "update_product", "get_product_stock"}:
+    if action in {"create_product", "update_product", "get_product_stock", "query_products"}:
         entity_type = "product"
         entity_name = data.get("name", "")
         entity_id = data.get("id", "")
@@ -243,7 +257,7 @@ def audit_entities_for(action, data):
         entity_type = "supplier"
         entity_name = data.get("name", "")
         entity_id = data.get("id", "")
-    elif action in {"create_purchase_order", "update_purchase_order", "delete_purchase_order"}:
+    elif action in {"create_purchase_order", "update_purchase_order", "delete_purchase_order", "complete_purchase_order", "cancel_latest_purchase_order"}:
         entity_type = "purchase_order"
         entity_name = data.get("id", "")
         entity_id = data.get("id", "")
@@ -327,12 +341,13 @@ def execute_agent_action(message, provider_name=None):
 
         if intent == "configure_auto_replenishment":
             enabled = bool(result["data"].get("enabled"))
-            set_auto_replenishment(enabled)
+            threshold = result["data"].get("threshold")
+            set_auto_replenishment(enabled, threshold)
             return build_agent_response(
                 provider.name,
                 intent,
                 "La reposicion automatica ha quedado configurada.",
-                {"enabled": enabled},
+                {"enabled": enabled, "threshold": threshold},
                 provider_status=provider_status,
             )
 
@@ -342,6 +357,16 @@ def execute_agent_action(message, provider_name=None):
 
         if intent == "list_products":
             data = list_products()
+            return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
+
+        if intent == "query_products":
+            query_data = result.get("data", {})
+            data = product_insights(
+                query_data.get("kind"),
+                limit=query_data.get("limit"),
+                threshold=query_data.get("threshold"),
+                search=query_data.get("search"),
+            )
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
 
         if intent == "get_product_stock":
@@ -424,8 +449,16 @@ def execute_agent_action(message, provider_name=None):
             data["name"] = supplier.name
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
 
+        if intent == "delete_all_suppliers":
+            data = clear_suppliers()
+            return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
+
         if intent == "list_purchase_orders":
             data = list_purchase_orders()
+            return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
+
+        if intent == "query_purchase_orders":
+            data = order_insights(result.get("data", {}).get("kind"))
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
 
         if intent == "create_purchase_order":
@@ -453,6 +486,14 @@ def execute_agent_action(message, provider_name=None):
             data = delete_purchase_order(result["data"]["id"])
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
 
+        if intent == "complete_purchase_order":
+            data = mark_purchase_order_completed(result["data"]["id"])
+            return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
+
+        if intent == "cancel_latest_purchase_order":
+            data = cancel_latest_purchase_order()
+            return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
+
         if intent == "list_waste":
             data = list_waste_records()
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
@@ -469,6 +510,10 @@ def execute_agent_action(message, provider_name=None):
 
         if intent == "delete_waste":
             data = delete_waste_record(result["data"]["id"])
+            return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
+
+        if intent == "delete_all_waste":
+            data = clear_waste_records()
             return build_agent_response(provider.name, intent, result["reply"], data, provider_status=provider_status)
 
         if intent == "show_statistics":
@@ -545,6 +590,11 @@ def professional_reply(action, fallback_reply, data):
         total = len(data) if isinstance(data, list) else 0
         return f"Consulta realizada correctamente. Se han encontrado {total} registro(s)."
 
+    if action in ["query_products", "query_purchase_orders"]:
+        if isinstance(data, list):
+            return f"Consulta realizada correctamente. Se han encontrado {len(data)} resultado(s)."
+        return "Consulta calculada correctamente. Se muestran los datos solicitados en el panel."
+
     if action == "add_product_stock":
         reply = "Inventario actualizado correctamente. Las unidades quedan reflejadas en el panel en vivo."
         note = proactive_note_for(action, data)
@@ -559,6 +609,12 @@ def professional_reply(action, fallback_reply, data):
         reply = "Registro actualizado correctamente. Los cambios se han aplicado en el ERP."
         note = proactive_note_for(action, data)
         return f"{reply}{note}" if note else reply
+
+    if action in ["complete_purchase_order"]:
+        return "Pedido actualizado correctamente. El cambio de estado queda reflejado en el ERP."
+
+    if action == "cancel_latest_purchase_order":
+        return "Ultimo pedido cancelado correctamente. El stock asociado se ha ajustado."
 
     if action.startswith("delete_"):
         reply = "Registro eliminado correctamente. La operacion ha quedado aplicada en el ERP."
