@@ -251,7 +251,7 @@ function DataTable({ title, rows }) {
     );
   }
 
-  const hiddenColumns = new Set(["supplier_id", "product_id"]);
+  const hiddenColumns = new Set(["supplier_id", "product_id", "tax_id"]);
   const columns = Object.keys(rows[0]).filter((column) => !hiddenColumns.has(column));
   const columnLabels = {
     id: "ID",
@@ -265,7 +265,6 @@ function DataTable({ title, rows }) {
     created_at: "Creado",
     updated_at: "Actualizado",
     contact_email: "Email",
-    tax_id: "CIF",
     phone: "Telefono",
     address: "Direccion",
     products_supplied: "Productos",

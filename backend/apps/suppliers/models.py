@@ -5,7 +5,7 @@ class Supplier(Document):
     meta = {"collection": "suppliers", "ordering": ["name"]}
 
     name = StringField(required=True, unique=True, max_length=120)
-    contact_email = StringField(required=True)
+    contact_email = StringField(default="")
     tax_id = StringField(default="")
     phone = StringField(default="")
     address = StringField(default="")

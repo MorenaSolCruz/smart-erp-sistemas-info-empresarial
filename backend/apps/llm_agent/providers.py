@@ -139,6 +139,11 @@ Responde siempre en espanol profesional y breve.
 Ejemplos de interpretacion:
 - "agrega televisor con precio 300 y 5 unidades" -> create_product con name Televisor, stock 5, unit_price 300.
 - "mete 10 ratones al inventario" -> add_product_stock con name Ratones, quantity 10.
+- "actualiza precio de Iphone a 500" -> update_product con name Iphone, unit_price 500.
+- "agrega precio 500 a Iphone" -> update_product con name Iphone, unit_price 500.
+- "pon precio 500 a Iphone" -> update_product con name Iphone, unit_price 500.
+- "actualiza stock de Iphone a 15" -> update_product con name Iphone, stock 15.
+- "modifica unidades de Iphone a 15" -> update_product con name Iphone, stock 15.
 - "cuantos monitores tengo?" -> get_product_stock con name Monitores.
 - "que hay en el inventario?" -> list_products.
 - "quiero ver proveedores" -> list_suppliers.
@@ -326,6 +331,8 @@ class MockLLMProvider(BaseLLMProvider):
             self._parse_quick_inventory_add,
             self._parse_create_product,
             self._parse_flexible_create_product,
+            self._parse_product_stock_update,
+            self._parse_product_price_update,
             self._parse_update_product,
             self._parse_delete_product,
             self._parse_delete_all_suppliers,
@@ -571,7 +578,7 @@ class MockLLMProvider(BaseLLMProvider):
         }
 
     def _parse_flexible_create_product(self, message):
-        if not any(term in message for term in ["agrega", "agregar", "anade", "añade", "crear", "crea", "registra", "mete", "introduce"]):
+        if not any(term in message for term in ["agrega", "agregar", "anade", "añade", "crear", "crea", "registra", "registrar", "mete", "introduce", "insertar", "inserta"]):
             return None
         if not any(term in message for term in ["precio", "cuesta", "vale"]):
             return None
@@ -662,9 +669,48 @@ class MockLLMProvider(BaseLLMProvider):
             "data": data,
         }
 
+    def _parse_product_price_update(self, message):
+        patterns = [
+            r"(?:actualiza|actualizar|modifica|modificar|cambia|cambiar|edita|editar|pon|poner|asigna|asignar)"
+            r" (?:el )?precio de (?P<name>.+?) (?:a|en|con|por) (?P<price>\d+(?:[.,]\d+)?)$",
+            r"(?:agrega|agregar|añade|anade|inserta|insertar|pon|poner|asigna|asignar|actualiza|actualizar|cambia|cambiar|edita|editar)"
+            r" (?:el )?precio (?P<price>\d+(?:[.,]\d+)?) (?:a|al|para|en) (?P<name>.+)$",
+            r"(?:precio de )(?P<name>.+?) (?:a|en|con|por)? ?(?P<price>\d+(?:[.,]\d+)?)$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+            name = clean_product_name(match.group("name"))
+            return {
+                "intent": "update_product",
+                "reply": f"Actualizo el precio de {name}.",
+                "data": {"name": name, "unit_price": decimal_value(match.group("price"))},
+            }
+        return None
+
+    def _parse_product_stock_update(self, message):
+        patterns = [
+            r"(?:actualiza|actualizar|modifica|modificar|cambia|cambiar|edita|editar|pon|poner|asigna|asignar)"
+            r" (?:el )?(?:stock|cantidad|unidades) de (?P<name>.+?) (?:a|en|con|por) (?P<stock>\d+)$",
+            r"(?:actualiza|actualizar|modifica|modificar|cambia|cambiar|edita|editar|pon|poner|asigna|asignar)"
+            r" (?P<name>.+?) (?:con )?(?:stock|cantidad|unidades) (?P<stock>\d+)$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+            name = clean_product_name(match.group("name"))
+            return {
+                "intent": "update_product",
+                "reply": f"Actualizo el stock de {name}.",
+                "data": {"name": name, "stock": int(match.group("stock"))},
+            }
+        return None
+
     def _parse_update_product(self, message):
         match = re.search(
-            r"(?:actualiza|actualizar|modifica|modificar) (?:el )?producto (?P<name>.+?)"
+            r"(?:actualiza|actualizar|modifica|modificar|cambia|cambiar|edita|editar) (?:el )?producto (?P<name>.+?)"
             r"(?: con nombre (?P<new_name>.+?))?"
             r"(?: con stock (?P<stock>\d+))?"
             r"(?: y stock minimo (?P<minimum_stock>\d+))?"
@@ -705,7 +751,7 @@ class MockLLMProvider(BaseLLMProvider):
 
     def _parse_create_supplier(self, message):
         match = re.search(
-            r"(?:registra|registrar|crea|crear) un proveedor(?: llamado)? (?P<name>.+?)"
+            r"(?:registra|registrar|crea|crear|agrega|agregar|añade|anade|inserta|insertar) un proveedor(?: llamado)? (?P<name>.+?)"
             r"(?:\s+(?:con\s+)?(?:email|correo|cif|nif|tax id|telefono|teléfono|direccion|dirección)\b|$)",
             message,
         )
@@ -735,7 +781,18 @@ class MockLLMProvider(BaseLLMProvider):
         }
 
     def _parse_update_supplier(self, message):
-        phone_only = re.search(r"(?:actualiza|actualizar|modifica|modificar) (?:el )?telefono de (?P<name>.+?) a (?P<phone>[\d+ ]+)$", message)
+        clear_email = re.search(
+            r"(?:elimina|eliminar|borra|borrar|quita|quitar) (?:el )?(?:email|correo) (?:de|del) (?:proveedor )?(?P<name>.+)$",
+            message,
+        )
+        if clear_email:
+            return {
+                "intent": "update_supplier",
+                "reply": f"Quito el correo del proveedor {display_name(clear_email.group('name'))}.",
+                "data": {"name": display_name(clear_email.group("name")), "contact_email": ""},
+            }
+
+        phone_only = re.search(r"(?:actualiza|actualizar|modifica|modificar|cambia|cambiar|edita|editar) (?:el )?telefono de (?P<name>.+?) a (?P<phone>[\d+ ]+)$", message)
         if phone_only:
             return {
                 "intent": "update_supplier",
@@ -743,7 +800,7 @@ class MockLLMProvider(BaseLLMProvider):
                 "data": {"name": display_name(phone_only.group("name")), "phone": phone_only.group("phone").strip()},
             }
         match = re.search(
-            r"(?:actualiza|actualizar|modifica|modificar) (?:el )?proveedor (?P<name>.+?)"
+            r"(?:actualiza|actualizar|modifica|modificar|cambia|cambiar|edita|editar) (?:el )?proveedor (?P<name>.+?)"
             r"(?:\s+(?:con\s+)?(?:nombre|email|correo|cif|nif|tax id|telefono|teléfono|direccion|dirección)\b|$)",
             message,
         )

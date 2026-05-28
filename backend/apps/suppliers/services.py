@@ -1,8 +1,28 @@
 from datetime import datetime
+import unicodedata
 
 from mongoengine.errors import NotUniqueError, ValidationError
 
 from apps.suppliers.models import Supplier
+
+
+def normalize_lookup(value):
+    value = unicodedata.normalize("NFD", str(value or "").strip().lower())
+    value = "".join(char for char in value if unicodedata.category(char) != "Mn")
+    return " ".join(value.split())
+
+
+def resolve_supplier_matches(name):
+    requested = normalize_lookup(name)
+    requested_without_digits = normalize_lookup("".join(char for char in str(name or "") if not char.isdigit()))
+    matches = []
+    for supplier in Supplier.objects:
+        supplier_name = normalize_lookup(supplier.name)
+        if supplier_name == requested or (requested_without_digits and supplier_name == requested_without_digits):
+            matches.append(supplier)
+            if len(matches) > 1:
+                break
+    return matches
 
 
 def serialize_supplier(supplier):
@@ -34,9 +54,7 @@ def get_supplier_document_by_name(name):
 
     matches = list(Supplier.objects(name__iexact=name).limit(2))
     if not matches:
-        normalized_without_suffix = "".join(char for char in name if not char.isdigit()).strip()
-        if normalized_without_suffix and normalized_without_suffix != name:
-            matches = list(Supplier.objects(name__iexact=normalized_without_suffix).limit(2))
+        matches = resolve_supplier_matches(name)
     if not matches:
         raise Supplier.DoesNotExist("Proveedor no encontrado.")
     if len(matches) > 1:
@@ -46,6 +64,10 @@ def get_supplier_document_by_name(name):
 
 def create_supplier(data):
     existing_supplier = Supplier.objects(name__iexact=data["name"]).first()
+    if not existing_supplier:
+        matches = resolve_supplier_matches(data["name"])
+        if len(matches) == 1:
+            existing_supplier = matches[0]
     if existing_supplier:
         return update_supplier(str(existing_supplier.id), data)
 
