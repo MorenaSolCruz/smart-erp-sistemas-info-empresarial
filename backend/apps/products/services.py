@@ -15,6 +15,68 @@ def singular_tokens(value):
     return [token[:-1] if token.endswith("s") and len(token) > 3 else token for token in tokens]
 
 
+def _format_product_options(products):
+    return ", ".join(product.name for product in products)
+
+
+def _matches_product_tokens(query_name, product_name):
+    query_tokens = singular_tokens(query_name)
+    product_tokens = singular_tokens(product_name)
+    if not query_tokens:
+        return False
+    return all(
+        any(
+            query_token == product_token
+            or (len(query_token) >= 3 and product_token.startswith(query_token))
+            or (len(product_token) >= 4 and query_token.startswith(product_token))
+            for product_token in product_tokens
+        )
+        for query_token in query_tokens
+    )
+
+
+def _contains_dangerous_name_overlap(query_name, product_name):
+    normalized_query = normalize_lookup(query_name)
+    normalized_product = normalize_lookup(product_name)
+    return (
+        normalized_query != normalized_product
+        and (
+            normalized_product.startswith(normalized_query)
+            or normalized_query.startswith(normalized_product)
+        )
+    )
+
+
+def _resolve_product_candidates(name):
+    products = list(Product.objects.order_by("name"))
+    normalized_name = normalize_lookup(name)
+
+    exact_matches = [product for product in products if normalize_lookup(product.name) == normalized_name]
+    if exact_matches:
+        overlapping_matches = [
+            product for product in products if _contains_dangerous_name_overlap(name, product.name)
+        ]
+        if overlapping_matches:
+            candidates = sorted(exact_matches + overlapping_matches, key=lambda product: product.name.lower())
+            raise ValidationError(
+                f"He encontrado varios productos muy parecidos: {_format_product_options(candidates)}. "
+                "Indica cual quieres usar exactamente."
+            )
+        return exact_matches
+
+    fuzzy_matches = [product for product in products if _matches_product_tokens(name, product.name)]
+    if not fuzzy_matches:
+        raise DoesNotExist(f"No existe ningun articulo llamado {name} en el inventario.")
+
+    if len(fuzzy_matches) > 1:
+        raise ValidationError(
+            f"He encontrado varios productos compatibles: {_format_product_options(fuzzy_matches)}. "
+            "Indica el nombre exacto antes de continuar."
+        )
+
+    return fuzzy_matches
+
+
 def serialize_product(product):
     return {
         "id": str(product.id),
@@ -49,26 +111,7 @@ def get_product_document_by_name(name):
     from apps.waste.services import process_expired_products
 
     process_expired_products()
-    exact_product = Product.objects(name=name).first()
-    if exact_product:
-        return exact_product
-
-    matches = list(Product.objects(name__iexact=name).limit(2))
-    if not matches:
-        query_tokens = singular_tokens(name)
-        fuzzy_matches = []
-        for product in Product.objects:
-            product_tokens = singular_tokens(product.name)
-            if all(any(query_token in product_token or product_token in query_token for product_token in product_tokens) for query_token in query_tokens):
-                fuzzy_matches.append(product)
-                if len(fuzzy_matches) > 1:
-                    break
-        if not fuzzy_matches:
-            raise DoesNotExist("Producto no encontrado.")
-        matches = fuzzy_matches
-    if len(matches) > 1:
-        raise ValidationError("Hay varios productos con nombres muy parecidos. Usa el nombre exacto que aparece al listar productos.")
-    return matches[0]
+    return _resolve_product_candidates(name)[0]
 
 
 def create_product(data):
@@ -111,11 +154,29 @@ def update_product(product_id, data):
     return serialize_product(product)
 
 
-def delete_product(product_id):
+def delete_product(product_id, quantity=None):
     from apps.purchase_orders.models import PurchaseOrder
     from apps.waste.models import WasteRecord
 
     product = Product.objects.get(id=product_id)
+
+    if quantity is not None:
+        quantity = int(quantity)
+        if quantity <= 0:
+            raise ValidationError("La cantidad a borrar debe ser mayor que cero.")
+        if quantity > product.stock:
+            raise ValidationError(
+                f"No puedes borrar {quantity} unidad(es) de {product.name} porque solo hay {product.stock} en inventario."
+            )
+        adjust_stock(product, -quantity)
+        return {
+            "deleted": False,
+            "id": product_id,
+            "name": product.name,
+            "removed_quantity": quantity,
+            "stock": product.stock,
+            "minimum_stock": product.minimum_stock,
+        }
 
     if PurchaseOrder.objects(items__product_id=str(product.id)).first():
         raise ValidationError("No se puede eliminar el producto porque aparece en pedidos. Puedes actualizarlo o revisar los pedidos asociados.")
@@ -128,6 +189,21 @@ def delete_product(product_id):
 
 
 def clear_products_inventory():
+    from apps.purchase_orders.models import PurchaseOrder
+    from apps.waste.models import WasteRecord
+
+    if PurchaseOrder.objects.first():
+        raise ValidationError(
+            "No se puede vaciar todo el inventario porque existen pedidos asociados a productos. "
+            "Elimina o cierra primero esas referencias antes de continuar."
+        )
+
+    if WasteRecord.objects.first():
+        raise ValidationError(
+            "No se puede vaciar todo el inventario porque existen desechos asociados a productos. "
+            "Revisa o elimina primero esos registros antes de continuar."
+        )
+
     count = Product.objects.count()
     Product.objects.delete()
     return {"deleted": True, "deleted_count": count}

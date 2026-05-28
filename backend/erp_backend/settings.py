@@ -71,4 +71,27 @@ REST_FRAMEWORK = {
     "UNAUTHENTICATED_USER": None,
 }
 
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "plain": {
+            "format": "%(message)s",
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "plain",
+        }
+    },
+    "loggers": {
+        "smart_erp.observability": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        }
+    },
+}
+
 connect_to_mongo()

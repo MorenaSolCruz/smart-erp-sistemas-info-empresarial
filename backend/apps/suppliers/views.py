@@ -1,4 +1,4 @@
-from mongoengine.errors import DoesNotExist, NotUniqueError
+from mongoengine.errors import DoesNotExist, NotUniqueError, ValidationError
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -59,4 +59,5 @@ class SupplierDetailView(APIView):
             return Response(delete_supplier(supplier_id))
         except DoesNotExist:
             return Response({"detail": "Proveedor no encontrado."}, status=status.HTTP_404_NOT_FOUND)
-
+        except ValidationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

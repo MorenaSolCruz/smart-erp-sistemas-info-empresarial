@@ -59,4 +59,5 @@ class ProductDetailView(APIView):
             return Response(delete_product(product_id))
         except DoesNotExist:
             return Response({"detail": "Producto no encontrado."}, status=status.HTTP_404_NOT_FOUND)
-
+        except ValidationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

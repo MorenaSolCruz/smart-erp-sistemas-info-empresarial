@@ -24,6 +24,8 @@ ALLOWED_INTENTS = {
     "delete_supplier",
     "list_purchase_orders",
     "create_purchase_order",
+    "receive_purchase_order",
+    "cancel_purchase_order",
     "update_purchase_order",
     "delete_purchase_order",
     "list_waste",
@@ -59,6 +61,7 @@ RESPONSE_SCHEMA = {
 }
 
 CONFIRMATION_PREFIX = "confirm_action::"
+LLM_ERROR_MESSAGE = "El LLM no pudo procesar la solicitud, contacte con el administrador."
 
 
 SYSTEM_PROMPT = """
@@ -79,7 +82,7 @@ Intenciones permitidas:
 - list_products, create_product, add_product_stock, update_product, delete_product, delete_all_products
 - get_product_stock para preguntas como "cuantos monitores tengo" o "stock de Filtro HEPA"
 - list_suppliers, create_supplier, update_supplier, delete_supplier
-- list_purchase_orders, create_purchase_order, update_purchase_order, delete_purchase_order
+- list_purchase_orders, create_purchase_order, receive_purchase_order, cancel_purchase_order, update_purchase_order, delete_purchase_order
 - list_waste, create_waste, update_waste, delete_waste
 - show_statistics
 - show_audit_history para trazabilidad y auditoria
@@ -89,6 +92,7 @@ Reglas de seguridad:
 - Para eliminar un producto, proveedor, pedido o desecho concreto, usa delete_* directamente.
 - Solo pide confirmation_required si el usuario quiere eliminar todo el inventario, todo el almacen,
   todos los productos o todos los registros de productos.
+- Si el usuario mezcla varias acciones o condiciones en la misma frase, no adivines. Usa missing_data y pide que lo separe en pasos.
 - Si faltan campos obligatorios, usa missing_data.
 - Si la intencion no es clara, usa fallback.
 - Si el usuario pregunta que puedes hacer, ejemplos, ayuda, comandos o capacidades, usa help.
@@ -103,13 +107,15 @@ Campos esperados por intencion:
 - create_product: data.name, data.stock, data.unit_price. Opcionales: description, category, minimum_stock.
 - add_product_stock: data.name, data.quantity. Si el producto no existe, el backend puede crearlo con precio 0.
 - update_product: data.name y al menos uno de new_name, stock, unit_price, category, minimum_stock.
-- delete_product: data.name.
+- delete_product: data.name. Opcional: data.quantity si solo quiere borrar una cantidad del stock.
 - delete_all_products: data debe ser {}.
 - get_product_stock: data.name.
 - create_supplier: data.name, data.contact_email. Opcionales: phone, address, products_supplied.
 - update_supplier: data.name y al menos uno de new_name, contact_email, phone, address.
 - delete_supplier: data.name.
 - create_purchase_order: data.supplier_name, data.items. Cada item necesita product_name y quantity. unit_price opcional.
+- receive_purchase_order: data.supplier_name o data.id. Opcional: data.items si la recepcion es parcial.
+- cancel_purchase_order: data.supplier_name o data.id. Opcional: data.reason.
 - update_purchase_order: data.id, data.supplier_name, data.items. status opcional.
 - delete_purchase_order: data.id.
 - create_waste: data.product_name, data.quantity, data.reason. reason debe ser caducidad, producto dañado o ajuste manual.
@@ -129,8 +135,11 @@ Ejemplos de interpretacion:
 - "que hay en el inventario?" -> list_products.
 - "quiero ver proveedores" -> list_suppliers.
 - "haz un pedido a ClimaSur de 8 filtros HEPA" -> create_purchase_order.
+- "recibimos el pedido del proveedor ClimaSur" -> receive_purchase_order.
+- "cancela el pedido del proveedor ClimaSur" -> cancel_purchase_order.
 - "borra el producto Tablet" -> delete_product.
 - "elimina telefono" -> delete_product con name Telefono.
+- "borra 3 filtros hepa" -> delete_product con name Filtro Hepa, quantity 3.
 - "elimina todo el inventario" -> confirmation_required con data.pending_action delete_all_products.
 - "confirma eliminar todo el inventario" -> delete_all_products.
 - "muestrame las ultimas 10 acciones sobre este proveedor" -> show_audit_history.
@@ -151,8 +160,9 @@ def normalize_text(value):
 
 
 def display_name(value):
+    value = re.sub(r"^(?:llamado|llamada)\s+", "", value.strip(), flags=re.IGNORECASE)
     acronyms = {"api", "erp", "hepa", "llm", "sku"}
-    return " ".join(word.upper() if word in acronyms else word.capitalize() for word in value.strip().split())
+    return " ".join(word.upper() if word in acronyms else word.capitalize() for word in value.split())
 
 
 def decimal_value(value, default=0):
@@ -218,10 +228,13 @@ def parse_confirmation_token(message):
 
 
 def fallback_result(provider_name, user_message, context, reason):
-    result = MockLLMProvider().generate_response(user_message, context)
-    result["reply"] = f"{result['reply']} (fallback local: {reason})."
-    result["provider_status"] = f"Fallback local: {reason}"
-    return result
+    return {
+        "intent": "fallback",
+        "reply": LLM_ERROR_MESSAGE,
+        "data": {},
+        "provider_status": f"LLM unavailable: {provider_name} ({reason})",
+        "llm_error": True,
+    }
 
 
 def product_payload(match):
@@ -243,12 +256,87 @@ def integer_from_text(value):
 
 def compact_product_name(value):
     value = re.sub(
-        r"\b(y|con|de|del|al|a|el|la|los|las|un|una|unas|unos|producto|productos|precio|precios|stock|unidades|unidad|inventario|cuesta|vale)\b",
+        r"\b(y|con|de|del|al|a|el|la|los|las|un|una|unas|unos|producto|productos|precio|precios|stock|unidades|unidad|inventario|cuesta|vale|llamado|llamada)\b",
         " ",
         value,
     )
     value = re.sub(r"\d+(?:[.,]\d+)?", " ", value)
     return " ".join(value.split()).strip()
+
+
+def is_full_inventory_delete_request(message):
+    explicit_full_scope_patterns = [
+        r"\b(?:elimina|eliminar|borra|borrar)\b.*\b(?:todo|todos|toda)\b.*\b(?:inventario|almacen|productos)\b",
+        r"\b(?:vaciar|limpiar)\b.*\b(?:inventario|almacen|productos)\b",
+    ]
+    return any(re.search(pattern, message) for pattern in explicit_full_scope_patterns)
+
+
+def detect_compound_request(message):
+    normalized = f" {message.strip()} "
+    action_patterns = {
+        "inventory_read": r"\b(?:muestrame|muestra|mostrar|lista|listar|ver|consulta|stock de|cantidad de|cuantos|cuantas|cuanto)\b",
+        "inventory_write": r"\b(?:agrega|anade|mete|introduce|crea|crear|actualiza|modifica|borra|elimina|vaciar|limpiar)\b",
+        "supplier": r"\b(?:proveedor|proveedores)\b",
+        "purchase_order": r"\b(?:pedido|pedidos|pedir|pide|recibimos|recibido|cancela|anula)\b",
+        "waste": r"\b(?:desecho|merma)\b",
+    }
+    matched_categories = [name for name, pattern in action_patterns.items() if re.search(pattern, normalized)]
+
+    multi_connector_patterns = [
+        r"\b(?:y luego|luego|despues|despues de eso|ademas)\b",
+        r"\bsi\b.+\b(?:entonces|borra|elimina|crea|pide|muestra|lista|actualiza)\b",
+        r"[;,]",
+    ]
+    has_compound_connector = any(re.search(pattern, normalized) for pattern in multi_connector_patterns)
+
+    multiple_action_verbs = len(
+        re.findall(
+            r"\b(?:agrega|anade|mete|introduce|crea|crear|actualiza|modifica|borra|elimina|pide|pedir|recibimos|recibido|cancela|anula|muestra|lista|ver|consulta)\b",
+            normalized,
+        )
+    ) >= 2
+
+    if len(set(matched_categories)) >= 2 and (has_compound_connector or multiple_action_verbs):
+        return {
+            "intent": "missing_data",
+            "reply": (
+                "He detectado varias acciones en la misma solicitud. Para evitar errores, pÃ­demelas por separado, "
+                "por ejemplo primero el pedido y luego el borrado."
+            ),
+            "data": {"reason": "compound_request"},
+        }
+
+    conditional_follow_up = re.search(
+        r"\b(?:si|cuando)\b.+\b(?:borra|elimina|crea|pide|muestra|lista|actualiza|cancela|recibe|recibimos)\b",
+        normalized,
+    )
+    if conditional_follow_up and multiple_action_verbs:
+        return {
+            "intent": "missing_data",
+            "reply": (
+                "He detectado una solicitud condicional con varias acciones. Para evitar resultados no deseados, "
+                "indÃ­came primero una sola operaciÃ³n."
+            ),
+            "data": {"reason": "conditional_request"},
+        }
+
+    multiple_list_targets = re.search(
+        r"\b(?:producto|productos|proveedor|proveedores|pedido|pedidos|desecho|desechos|merma|mermas)\b.+\by\b.+"
+        r"\b(?:producto|productos|proveedor|proveedores|pedido|pedidos|desecho|desechos|merma|mermas)\b",
+        normalized,
+    )
+    if multiple_list_targets and re.search(r"\b(?:muestrame|muestra|mostrar|lista|listar|ver|consulta)\b", normalized):
+        return {
+            "intent": "missing_data",
+            "reply": (
+                "He detectado varias consultas en la misma frase. Para evitar ambigÃ¼edades, pÃ­deme primero una sola lista, "
+                "por ejemplo productos o proveedores."
+            ),
+            "data": {"reason": "multi_target_query"},
+        }
+
+    return None
 
 
 class MockLLMProvider(BaseLLMProvider):
@@ -284,6 +372,10 @@ class MockLLMProvider(BaseLLMProvider):
                 ),
             }
 
+        compound_request = detect_compound_request(lowered)
+        if compound_request:
+            return compound_request
+
         dangerous_delete = self._parse_dangerous_inventory_delete(lowered)
         if dangerous_delete:
             return dangerous_delete
@@ -298,8 +390,15 @@ class MockLLMProvider(BaseLLMProvider):
             }
 
         for parser in [
+            self._parse_pending_purchase_orders,
+            self._parse_quick_inventory_add_v2,
             self._parse_quick_inventory_add,
             self._parse_flexible_create_product,
+            self._parse_contextual_purchase_order_v2,
+            self._parse_contextual_purchase_order,
+            self._parse_create_purchase_order,
+            self._parse_receive_purchase_order,
+            self._parse_cancel_purchase_order,
             self._parse_product_stock_question,
             self._parse_create_product,
             self._parse_update_product,
@@ -307,8 +406,6 @@ class MockLLMProvider(BaseLLMProvider):
             self._parse_create_supplier,
             self._parse_update_supplier,
             self._parse_delete_supplier,
-            self._parse_contextual_purchase_order,
-            self._parse_create_purchase_order,
             self._parse_update_purchase_order,
             self._parse_delete_purchase_order,
             self._parse_create_waste,
@@ -409,7 +506,7 @@ class MockLLMProvider(BaseLLMProvider):
     def _parse_dangerous_inventory_delete(self, message):
         if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vaciar", "limpiar"]):
             return None
-        if not any(term in message for term in ["todo", "todos", "toda", "inventario", "almacen", "almacen", "productos"]):
+        if not is_full_inventory_delete_request(message):
             return None
         if message.startswith("confirma ") or message in ["si", "sí", "s"]:
             return None
@@ -423,7 +520,7 @@ class MockLLMProvider(BaseLLMProvider):
         return (
             message.startswith("confirma ")
             and any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "vaciar", "limpiar"])
-            and any(term in message for term in ["todo", "todos", "toda", "inventario", "almacen", "productos"])
+            and is_full_inventory_delete_request(message)
         )
 
     def _is_ambiguous_delete(self, message):
@@ -445,7 +542,22 @@ class MockLLMProvider(BaseLLMProvider):
             return "list_waste"
         return None
 
+    def _parse_pending_purchase_orders(self, message):
+        if not any(term in message for term in ["pedido", "pedidos"]):
+            return None
+        if not any(term in message for term in ["pendiente", "pendientes", "falta", "faltan", "recibir", "recepcion"]):
+            return None
+        if not any(term in message for term in ["muestrame", "muestra", "mostrar", "lista", "listar", "ver", "consulta", "que", "cuales"]):
+            return None
+        return {
+            "intent": "list_purchase_orders",
+            "reply": "Consulto los pedidos pendientes de recibir.",
+            "data": {"status": "pending"},
+        }
+
     def _parse_product_stock_question(self, message):
+        if any(term in message for term in ["elimina", "eliminar", "borra", "borrar", "pedido", "pedir"]):
+            return None
         match = re.search(
             r"(?:cuantos|cuantas|cuanto|stock de|cantidad de|unidades de) (?P<name>.+?)(?: tengo| hay| quedan| en inventario)?\??$",
             message,
@@ -460,6 +572,62 @@ class MockLLMProvider(BaseLLMProvider):
             "reply": f"Consulto las unidades disponibles de {display_name(name)}.",
             "data": {"name": display_name(name)},
         }
+
+    def _parse_quick_inventory_add_v2(self, message):
+        patterns = [
+            r"(?:introduce|introducir|meter|mete|agrega|agregar|anade|anadir|sumar|registra|registrar) (?P<name>.+?) "
+            r"(?:en|al|a el)? ?inventario[, ]+(?P<stock>\d+)(?: unidades)?(?: concretamente)?$",
+            r"(?:introduce|introducir|meter|mete|agrega|agregar|anade|anadir|sumar|registra|registrar) (?P<stock>\d+) "
+            r"(?:unidades?(?: de)? )?(?P<name>.+?)(?: al inventario| en inventario)?$",
+            r"(?:mete|pon|carga) (?P<stock>\d+) (?P<name>.+?)(?: al inventario| en inventario)?$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+            raw_name = re.sub(r"^(?:de\s+)?", "", match.group("name")).strip()
+            name = display_name(raw_name)
+            stock = int(match.group("stock"))
+            return {
+                "intent": "add_product_stock",
+                "reply": f"Registro {stock} unidades de {name} en el inventario.",
+                "data": {
+                    "name": name,
+                    "quantity": stock,
+                },
+            }
+        return None
+
+    def _parse_contextual_purchase_order_v2(self, message):
+        patterns = [
+            r"(?:haz|hacer|crea|crear|genera|generar|registra|registrar|pide|pedir)(?:me|le)? un pedido "
+            r"de (?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+            r"(?:haz|hacer|crea|crear|genera|generar|registra|registrar|pide|pedir)(?:me|le)? un pedido al proveedor "
+            r"de (?P<quantity>\d+) (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+            r"(?:haz|hacer|crea|crear|genera|generar|registra|registrar|pide|pedir)(?:me|le)? un pedido al proveedor "
+            r"del producto (?P<product>.+?) por (?P<quantity>\d+) unidades?(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+            supplier = self._last_supplier_name()
+            if not supplier:
+                return {
+                    "intent": "missing_data",
+                    "reply": "No tengo un proveedor reciente en memoria. Indica el nombre del proveedor para crear el pedido.",
+                }
+            raw_product = re.sub(r"^(?:de\s+)?", "", match.group("product")).strip()
+            product = display_name(raw_product)
+            item = {"product_name": product, "quantity": int(match.group("quantity"))}
+            if match.group("price"):
+                item["unit_price"] = decimal_value(match.group("price"))
+            return {
+                "intent": "create_purchase_order",
+                "reply": f"Registro un pedido a {supplier}.",
+                "data": {"supplier_name": supplier, "items": [item]},
+            }
+        return None
 
     def _parse_quick_inventory_add(self, message):
         match = re.search(
@@ -589,13 +757,28 @@ class MockLLMProvider(BaseLLMProvider):
     def _parse_delete_product(self, message):
         if any(term in message for term in ["proveedor", "pedido", "orden", "desecho", "merma"]):
             return None
-        match = re.search(r"(?:confirma )?(?:elimina|eliminar|borra|borrar) (?:el |la )?(?:producto )?(?P<name>.+)$", message)
+        match = re.search(
+            r"(?:confirma )?(?:elimina|eliminar|borra|borrar) "
+            r"(?:(?P<quantity>\d+)(?: unidades?(?: de)?| uds?(?: de)?)?\s+)?"
+            r"(?:el |la )?(?:producto |articulo |articulos )?(?P<name>.+)$",
+            message,
+        )
         if not match:
             return None
-        name = display_name(match.group("name"))
+        raw_name = re.sub(r"^(?:de\s+)?(?:articulo|articulos)\s+", "", match.group("name")).strip()
+        raw_name = re.sub(r"\s+(?:del|de|en)\s+inventario$", "", raw_name).strip()
+        name = display_name(raw_name)
+        if not name:
+            return None
         if normalize_text(name) in ["todo", "todos", "toda", "inventario", "almacen", "productos"]:
             return None
-        return {"intent": "delete_product", "reply": f"Elimino el producto {name}.", "data": {"name": name}}
+        data = {"name": name}
+        if match.group("quantity"):
+            data["quantity"] = int(match.group("quantity"))
+            reply = f"Descuento {data['quantity']} unidad(es) de {name}."
+        else:
+            reply = f"Elimino el producto {name}."
+        return {"intent": "delete_product", "reply": reply, "data": data}
 
     def _parse_create_supplier(self, message):
         match = re.search(
@@ -660,28 +843,34 @@ class MockLLMProvider(BaseLLMProvider):
         return {"intent": "delete_supplier", "reply": f"Elimino el proveedor {name}.", "data": {"name": name}}
 
     def _parse_create_purchase_order(self, message):
-        match = re.search(
-            r"(?:crea|crear|registra|registrar) un pedido al proveedor (?P<supplier>.+?) "
+        patterns = [
+            r"(?:crea|crear|registra|registrar)(?:me)? un pedido al proveedor (?P<supplier>.+?) "
             r"de (?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
-            message,
-        )
-        if not match:
-            return None
-        supplier = display_name(match.group("supplier"))
-        product = display_name(match.group("product"))
-        item = {"product_name": product, "quantity": int(match.group("quantity"))}
-        if match.group("price"):
-            item["unit_price"] = decimal_value(match.group("price"))
-        return {
-            "intent": "create_purchase_order",
-            "reply": f"Registro un pedido a {supplier}.",
-            "data": {"supplier_name": supplier, "items": [item]},
-        }
+            r"(?:haz|hacer|crea|crear|registra|registrar)(?:me)? un pedido a (?P<supplier>.+?) "
+            r"de (?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+            r"(?:pide|pedir)(?:me)? a (?P<supplier>.+?) "
+            r"(?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+            supplier = display_name(match.group("supplier"))
+            product = display_name(match.group("product"))
+            item = {"product_name": product, "quantity": int(match.group("quantity"))}
+            if match.group("price"):
+                item["unit_price"] = decimal_value(match.group("price"))
+            return {
+                "intent": "create_purchase_order",
+                "reply": f"Registro un pedido a {supplier}.",
+                "data": {"supplier_name": supplier, "items": [item]},
+            }
+        return None
 
         
     def _parse_contextual_purchase_order(self, message):
         match = re.search(
-            r"(?:haz|hacer|crea|crear|registra|registrar)(?:le)? un pedido "
+            r"(?:haz|hacer|crea|crear|registra|registrar|pide|pedir)(?:me|le)? un pedido "
             r"de (?P<quantity>\d+) unidades de (?P<product>.+?)(?: a precio (?P<price>\d+(?:[.,]\d+)?))?$",
             message,
         )
@@ -705,6 +894,82 @@ class MockLLMProvider(BaseLLMProvider):
             "reply": f"Registro un pedido a {supplier}.",
             "data": {"supplier_name": supplier, "items": [item]},
         }
+
+    def _parse_receive_purchase_order(self, message):
+        partial_match = re.search(
+            r"(?:hemos )?(?:recibido|recibimos|llego|ha llegado) (?P<quantity>\d+) unidades de (?P<product>.+?) "
+            r"del pedido (?:del |de )?proveedor (?P<supplier>.+)$",
+            message,
+        )
+        if partial_match:
+            supplier = display_name(partial_match.group("supplier"))
+            return {
+                "intent": "receive_purchase_order",
+                "reply": f"Registro una recepción parcial del pedido de {supplier}.",
+                "data": {
+                    "supplier_name": supplier,
+                    "items": [
+                        {
+                            "product_name": display_name(partial_match.group("product")),
+                            "quantity": int(partial_match.group("quantity")),
+                        }
+                    ],
+                },
+            }
+
+        match = re.search(
+            r"(?:hemos )?(?:recibido|recibimos|llego|ha llegado) (?:el )?pedido (?:del |de )?proveedor (?P<supplier>.+)$",
+            message,
+        )
+        if match:
+            supplier = display_name(match.group("supplier"))
+            return {
+                "intent": "receive_purchase_order",
+                "reply": f"Marco como recibido el ultimo pedido pendiente de {supplier}.",
+                "data": {"supplier_name": supplier},
+            }
+
+        match = re.search(
+            r"(?:hemos )?(?:recibido|recibimos|llego|ha llegado) (?:el )?pedido (?P<id>[a-f0-9]{24})$",
+            message,
+        )
+        if match:
+            return {
+                "intent": "receive_purchase_order",
+                "reply": "Marco como recibido el pedido indicado.",
+                "data": {"id": clean_identifier(match.group("id"))},
+            }
+        return None
+
+    def _parse_cancel_purchase_order(self, message):
+        match = re.search(
+            r"(?:cancela|cancelar|anula|anular) (?:el )?pedido (?:del |de )?proveedor (?P<supplier>.+?)(?: por (?P<reason>.+))?$",
+            message,
+        )
+        if match:
+            data = {"supplier_name": display_name(match.group("supplier"))}
+            if match.group("reason"):
+                data["reason"] = match.group("reason").strip()
+            return {
+                "intent": "cancel_purchase_order",
+                "reply": f"Cancelo el ultimo pedido abierto de {data['supplier_name']}.",
+                "data": data,
+            }
+
+        match = re.search(
+            r"(?:cancela|cancelar|anula|anular) (?:el )?pedido (?P<id>[a-f0-9]{24})(?: por (?P<reason>.+))?$",
+            message,
+        )
+        if match:
+            data = {"id": clean_identifier(match.group("id"))}
+            if match.group("reason"):
+                data["reason"] = match.group("reason").strip()
+            return {
+                "intent": "cancel_purchase_order",
+                "reply": "Cancelo el pedido indicado.",
+                "data": data,
+            }
+        return None
 
     def _parse_update_purchase_order(self, message):
         match = re.search(
@@ -835,10 +1100,10 @@ class GeminiProvider(BaseLLMProvider):
             return fallback_result("Gemini", user_message, context, "sin clave Gemini")
 
         model = self.model or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-        payload = {
-            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        structured_payload = {
+            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": [{"parts": [{"text": user_message}]}],
             "generationConfig": {
                 "responseMimeType": "application/json",
                 "responseJsonSchema": RESPONSE_SCHEMA,
@@ -846,19 +1111,43 @@ class GeminiProvider(BaseLLMProvider):
                 "maxOutputTokens": 450,
             },
         }
+        relaxed_payload = {
+            "system_instruction": {
+                "parts": [
+                    {
+                        "text": (
+                            f"{SYSTEM_PROMPT}\n\n"
+                            "Responde solo con JSON valido, sin markdown ni explicaciones extra."
+                        )
+                    }
+                ]
+            },
+            "contents": [{"parts": [{"text": user_message}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "temperature": 0.1,
+                "maxOutputTokens": 450,
+            },
+        }
         try:
-            response = requests.post(
-                url,
-                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
-                json=payload,
-                timeout=25,
-            )
-            response.raise_for_status()
-            body = response.json()
-            text = body["candidates"][0]["content"]["parts"][0]["text"]
-            result = normalize_llm_result(extract_json_object(text))
-            result["provider_status"] = f"API real: {model}"
-            return result
+            last_error = None
+            for payload in [structured_payload, relaxed_payload]:
+                try:
+                    response = requests.post(
+                        url,
+                        headers={"Content-Type": "application/json"},
+                        json=payload,
+                        timeout=25,
+                    )
+                    response.raise_for_status()
+                    body = response.json()
+                    text = _gemini_output_text(body)
+                    result = normalize_llm_result(extract_json_object(text))
+                    result["provider_status"] = f"API real: {model}"
+                    return result
+                except Exception as exc:
+                    last_error = exc
+            raise last_error or RuntimeError("Gemini no devolvio una respuesta util.")
         except Exception as exc:
             return fallback_result("Gemini", user_message, context, f"error Gemini: {exc}")
 
@@ -904,11 +1193,36 @@ class LocalLLMProvider(BaseLLMProvider):
     name = "local"
 
     def generate_response(self, user_message, context):
-        if not os.getenv("LOCAL_LLM_URL"):
+        local_url = os.getenv("LOCAL_LLM_URL")
+        if not local_url:
             result = MockLLMProvider().generate_response(user_message, context)
             result["reply"] = f"{result['reply']} (simulado sin modelo local)."
             return result
-        return MockLLMProvider().generate_response(user_message, context)
+
+        model = os.getenv("LOCAL_LLM_MODEL", "llama3.1:8b")
+        payload = {
+            "model": model,
+            "system": SYSTEM_PROMPT,
+            "prompt": user_message,
+            "stream": False,
+            "format": "json",
+            "options": {"temperature": 0.1},
+        }
+        try:
+            response = requests.post(
+                f"{local_url.rstrip('/')}/api/generate",
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=25,
+            )
+            response.raise_for_status()
+            body = response.json()
+            text = body.get("response", "")
+            result = normalize_llm_result(extract_json_object(text))
+            result["provider_status"] = f"API local: {model}"
+            return result
+        except Exception as exc:
+            return fallback_result("Local", user_message, context, f"error local: {exc}")
 
 
 def get_provider(provider_name=None):
@@ -937,4 +1251,14 @@ def _openai_output_text(body):
         for content in output.get("content", []):
             if content.get("type") in ["output_text", "text"]:
                 chunks.append(content.get("text", ""))
+    return "".join(chunks)
+
+
+def _gemini_output_text(body):
+    chunks = []
+    for candidate in body.get("candidates", []):
+        content = candidate.get("content", {})
+        for part in content.get("parts", []):
+            if part.get("text"):
+                chunks.append(part["text"])
     return "".join(chunks)

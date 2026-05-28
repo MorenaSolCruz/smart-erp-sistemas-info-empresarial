@@ -118,6 +118,7 @@ Variables disponibles:
 - `ANTHROPIC_API_KEY=`
 - `ANTHROPIC_MODEL=claude-3-5-haiku-latest`
 - `LOCAL_LLM_URL=http://localhost:11434`
+- `LOCAL_LLM_MODEL=llama3.1:8b`
 
 Ejemplos:
 

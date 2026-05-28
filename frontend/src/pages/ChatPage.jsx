@@ -34,6 +34,8 @@ const actionLabels = {
   delete_supplier: "Baja de proveedor",
   list_purchase_orders: "Consulta de pedidos",
   create_purchase_order: "Alta de pedido",
+  receive_purchase_order: "Recepcion de pedido",
+  cancel_purchase_order: "Cancelacion de pedido",
   update_purchase_order: "Actualizacion de pedido",
   delete_purchase_order: "Baja de pedido",
   list_waste: "Consulta de desechos",
@@ -49,7 +51,21 @@ const actionLabels = {
   fallback: "Sin accion ejecutada",
 };
 
+const cancellationMessages = {
+  delete_supplier: "Operacion cancelada. El proveedor se mantiene sin cambios.",
+  update_purchase_order: "Operacion cancelada. El pedido no ha sido modificado.",
+  delete_purchase_order: "Operacion cancelada. El pedido se mantiene registrado.",
+  cancel_purchase_order: "Operacion cancelada. El pedido sigue abierto sin cambios.",
+  delete_all_products: "Operacion cancelada. El inventario se mantiene sin cambios.",
+};
+
 const providerNotes = {
+  "": "Usa el proveedor configurado por defecto en el backend.",
+  mock: "Modo de demostracion sin llamadas a APIs externas.",
+  local: "Usa el modelo local configurado en el backend.",
+  openai: "Usa OpenAI si la clave API esta configurada.",
+  claude: "Usa Claude si la clave API esta configurada.",
+  gemini: "Usa Gemini si la clave API esta configurada.",
   "gemini-2.5-flash": "Modelo equilibrado para operaciones del ERP.",
   "gemini-2.5-flash-lite": "Modelo ligero para respuestas rapidas.",
   "gemini-2.0-flash": "Modelo rapido de generacion anterior.",
@@ -84,10 +100,8 @@ function detectThemeCommand(message) {
 }
 
 export default function ChatPage() {
-  const defaultGeminiModel = import.meta.env.VITE_DEFAULT_LLM_PROVIDER?.startsWith("gemini")
-    ? import.meta.env.VITE_DEFAULT_LLM_PROVIDER
-    : "gemini-2.5-flash";
-  const [provider, setProvider] = useState(defaultGeminiModel);
+  const defaultProvider = import.meta.env.VITE_DEFAULT_LLM_PROVIDER || "gemini";
+  const [provider, setProvider] = useState(defaultProvider);
   const [messages, setMessages] = useState(initialMessages);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -121,6 +135,8 @@ export default function ChatPage() {
       delete_supplier: ["Proveedores actualizados", getSuppliers],
       list_purchase_orders: ["Pedidos actualizados", getPurchaseOrders],
       create_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
+      receive_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
+      cancel_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
       update_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
       delete_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
       list_waste: ["Desechos actualizados", getWasteRecords],
@@ -182,13 +198,14 @@ export default function ChatPage() {
       }
 
       if (pendingAction && ["no", "n", "cancelar"].includes(normalizedMessage)) {
+        const cancelledAction = pendingAction.pending_action;
         setPendingAction(null);
         setMessages((current) => [
           ...current,
           {
             role: "assistant",
-            content: "Operacion cancelada. El inventario se mantiene sin cambios.",
-            meta: "Cancelado | Baja completa de inventario",
+            content: cancellationMessages[cancelledAction] || "Operacion cancelada. No se han aplicado cambios.",
+            meta: `Cancelado | ${actionLabels[cancelledAction] || "Operacion ERP"}`,
           },
         ]);
         return;
@@ -199,7 +216,8 @@ export default function ChatPage() {
           ? pendingAction.confirmation_token || "confirma eliminar todo el inventario"
           : userMessage;
 
-      const response = await postAgentMessage({ message: outgoingMessage, provider });
+      const payload = provider ? { message: outgoingMessage, provider } : { message: outgoingMessage };
+      const response = await postAgentMessage(payload);
       const actionLabel = actionLabels[response.action] || "Operacion ERP";
       const providerDetail = response.provider_status ? ` | ${response.provider_status}` : "";
 
@@ -276,8 +294,14 @@ export default function ChatPage() {
 
           <div className="topbar-controls">
             <label className="provider-box">
-              <span>Modelo Gemini</span>
+              <span>Proveedor LLM</span>
               <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+                <option value="">Predeterminado del backend</option>
+                <option value="mock">Mock</option>
+                <option value="local">Local</option>
+                <option value="openai">OpenAI</option>
+                <option value="claude">Claude</option>
+                <option value="gemini">Gemini</option>
                 <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                 <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
                 <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>

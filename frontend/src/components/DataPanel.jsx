@@ -6,6 +6,23 @@ function formatNumber(value) {
   return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 2 }).format(number);
 }
 
+function formatDate(value) {
+  if (!value) {
+    return "Sin fecha";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return String(value);
+  }
+  return new Intl.DateTimeFormat("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(parsed);
+}
+
 const chartColors = ["#37d7ff", "#55efc4", "#a78bfa", "#ff7ac8", "#fbbf24", "#fb7185"];
 
 function chartPercent(value, total) {
@@ -34,6 +51,119 @@ function shortLabel(value, maxLength = 14) {
 
 function chartPoint(x, y) {
   return `${Number(x).toFixed(2)},${Number(y).toFixed(2)}`;
+}
+
+function statusTone(status) {
+  const normalized = String(status || "").toLowerCase();
+  if (["received", "success", "active"].includes(normalized)) {
+    return "success";
+  }
+  if (["pending", "partially_received"].includes(normalized)) {
+    return "warning";
+  }
+  if (["cancelled", "closed_partial"].includes(normalized)) {
+    return "danger";
+  }
+  return "neutral";
+}
+
+function StatusBadge({ value }) {
+  return <span className={`status-badge status-${statusTone(value)}`}>{String(value ?? "-")}</span>;
+}
+
+function InlineMetric({ label, value }) {
+  return (
+    <span className="inline-metric">
+      <strong>{value}</strong>
+      <small>{label}</small>
+    </span>
+  );
+}
+
+function renderCellContent(column, value) {
+  if (column === "status") {
+    return <StatusBadge value={value} />;
+  }
+
+  if (["created_at", "updated_at", "received_at", "cancelled_at", "date", "timestamp"].includes(column)) {
+    return <span className="muted-cell">{formatDate(value)}</span>;
+  }
+
+  if (column === "items" && Array.isArray(value)) {
+    return (
+      <div className="stack-cell">
+        {value.map((item, index) => (
+          <article className="mini-card" key={`${item.product_id || item.product_name}-${index}`}>
+            <div className="mini-card-head">
+              <strong>{item.product_name || "Producto"}</strong>
+              <StatusBadge value={item.line_status || item.status || "pending"} />
+            </div>
+            <div className="mini-metrics">
+              <InlineMetric label="Pedidas" value={formatNumber(item.quantity)} />
+              <InlineMetric label="Pendientes" value={formatNumber(item.pending_quantity)} />
+              <InlineMetric label="Recibidas" value={formatNumber(item.received_quantity)} />
+              <InlineMetric label="Importe" value={formatNumber(item.line_total ?? item.unit_price)} />
+            </div>
+          </article>
+        ))}
+      </div>
+    );
+  }
+
+  if (column === "history" && Array.isArray(value)) {
+    return (
+      <div className="stack-cell history-cell">
+        {value.map((entry, index) => (
+          <article className="history-entry" key={`${entry.timestamp || entry.event}-${index}`}>
+            <div className="mini-card-head">
+              <strong>{entry.summary || entry.event || "Evento"}</strong>
+              <span className="muted-cell">{formatDate(entry.timestamp)}</span>
+            </div>
+            {entry.items?.length ? (
+              <div className="pill-row">
+                {entry.items.map((item, itemIndex) => (
+                  <span className="info-pill" key={`${item.product_name || item.quantity}-${itemIndex}`}>
+                    {(item.product_name || "Linea") + ": " + formatNumber(item.quantity || item.received_quantity || 0)}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </article>
+        ))}
+      </div>
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return (
+      <div className="pill-row">
+        {value.map((item, index) => (
+          <span className="info-pill" key={`${String(item)}-${index}`}>
+            {typeof item === "object" ? JSON.stringify(item) : String(item)}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  if (value && typeof value === "object") {
+    return (
+      <div className="stack-cell">
+        {Object.entries(value).map(([key, nestedValue]) => (
+          <div className="inline-pair" key={key}>
+            <span>{key}</span>
+            <strong>{typeof nestedValue === "number" ? formatNumber(nestedValue) : String(nestedValue ?? "-")}</strong>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (typeof value === "number") {
+    return formatNumber(value);
+  }
+
+  return String(value ?? "");
 }
 
 function DonutChart({ title, rows, labelKey, valueKey }) {
@@ -107,199 +237,13 @@ function DonutChart({ title, rows, labelKey, valueKey }) {
               <span className="legend-dot" style={{ backgroundColor: chartColors[index % chartColors.length] }} />
               <div>
                 <strong>{row[labelKey]}</strong>
-                <small>
-                  {chartPercent(row[valueKey], totalValue)}% del total
-                </small>
+                <small>{chartPercent(row[valueKey], totalValue)}% del total</small>
               </div>
               <span className="legend-value">{formatNumber(row[valueKey])}</span>
             </div>
           ))}
         </div>
       </div>
-    </section>
-  );
-}
-
-function ColumnChart({ title, rows, labelKey, valueKey }) {
-  if (!rows?.length) {
-    return (
-      <section className="panel-card">
-        <h3>{title}</h3>
-        <p>Sin datos todavia.</p>
-      </section>
-    );
-  }
-
-  const maxValue = Math.max(...rows.map((row) => Number(row[valueKey]) || 0), 1);
-  const totalValue = rows.reduce((total, row) => total + Number(row[valueKey] || 0), 0) || 1;
-  const chartWidth = 320;
-  const chartHeight = 220;
-  const left = 42;
-  const right = 18;
-  const top = 22;
-  const bottom = 42;
-  const plotWidth = chartWidth - left - right;
-  const plotHeight = chartHeight - top - bottom;
-  const slotWidth = plotWidth / rows.length;
-  const barWidth = Math.min(38, slotWidth * 0.52);
-  const ticks = [0, 0.25, 0.5, 0.75, 1];
-
-  return (
-    <section className="panel-card chart-card column-card advanced-chart">
-      <div className="chart-card-head">
-        <div>
-          <h3>{title}</h3>
-          <p>Comparativa por motivo</p>
-        </div>
-        <span>{formatNumber(totalValue)} total</span>
-      </div>
-      <div className="svg-chart-wrap">
-        <svg className="bar-svg" viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-label={title}>
-          <defs>
-            {rows.map((row, index) => (
-              <linearGradient id={`barGradient-${index}`} key={`barGradient-${index}`} x1="0" x2="0" y1="0" y2="1">
-                <stop offset="0%" stopColor={chartColors[(index + 2) % chartColors.length]} />
-                <stop offset="100%" stopColor={chartColors[(index + 3) % chartColors.length]} />
-              </linearGradient>
-            ))}
-          </defs>
-          {ticks.map((tick) => {
-            const y = top + plotHeight - tick * plotHeight;
-            return (
-              <g key={`tick-${tick}`}>
-                <line className="axis-grid" x1={left} x2={chartWidth - right} y1={y} y2={y} />
-                <text className="axis-label" x={left - 10} y={y + 4} textAnchor="end">
-                  {formatNumber(maxValue * tick)}
-                </text>
-              </g>
-            );
-          })}
-          <line className="axis-line" x1={left} x2={left} y1={top} y2={chartHeight - bottom} />
-          <line className="axis-line" x1={left} x2={chartWidth - right} y1={chartHeight - bottom} y2={chartHeight - bottom} />
-          {rows.map((row, index) => {
-            const value = Number(row[valueKey]) || 0;
-            const height = Math.max((value / maxValue) * plotHeight, 8);
-            const x = left + index * slotWidth + (slotWidth - barWidth) / 2;
-            const y = top + plotHeight - height;
-            return (
-              <g className="bar-group" key={`${row[labelKey]}-${index}`}>
-                <rect className="bar-hit" x={x - 8} y={top} width={barWidth + 16} height={plotHeight} rx="12">
-                  <title>{`${row[labelKey]}: ${formatNumber(value)} (${chartPercent(value, totalValue)}%)`}</title>
-                </rect>
-                <rect className="bar-column" x={x} y={y} width={barWidth} height={height} rx="13" fill={`url(#barGradient-${index})`} />
-                <text className="bar-value" x={x + barWidth / 2} y={y - 8} textAnchor="middle">
-                  {formatNumber(value)}
-                </text>
-                <text className="bar-label" x={x + barWidth / 2} y={chartHeight - 22} textAnchor="middle">
-                  {shortLabel(row[labelKey], 10)}
-                </text>
-                <text className="bar-percent" x={x + barWidth / 2} y={chartHeight - 8} textAnchor="middle">
-                  {chartPercent(value, totalValue)}%
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-    </section>
-  );
-}
-
-function DataTable({ title, rows }) {
-  if (!rows?.length) {
-    return (
-      <section className="panel-card">
-        <h3>{title}</h3>
-        <p>Sin datos todavia.</p>
-      </section>
-    );
-  }
-
-  const columns = Object.keys(rows[0]);
-  const columnLabels = {
-    id: "ID",
-    name: "Nombre",
-    description: "Descripcion",
-    category: "Categoria",
-    stock: "Stock",
-    minimum_stock: "Stock minimo",
-    unit_price: "Precio unitario",
-    expiration_date: "Caducidad",
-    created_at: "Creado",
-    updated_at: "Actualizado",
-    contact_email: "Email",
-    phone: "Telefono",
-    address: "Direccion",
-    products_supplied: "Productos",
-    supplier_id: "ID proveedor",
-    supplier_name: "Proveedor",
-    product_id: "ID producto",
-    product_name: "Producto",
-    items: "Lineas",
-    quantity: "Cantidad",
-    total_amount: "Importe total",
-    status: "Estado",
-    reason: "Motivo",
-    date: "Fecha",
-    economic_loss: "Perdida economica",
-    orders_count: "Pedidos",
-    wasted_quantity: "Unidades desechadas",
-    expired_products_count: "Productos caducados",
-    expired_units: "Unidades caducadas",
-    expired_economic_loss: "Perdida por caducidad",
-    timestamp: "Fecha",
-    action_label: "Accion",
-    entity_type: "Tipo de entidad",
-    entity_name: "Entidad",
-    summary: "Resumen",
-    enabled: "Activo",
-  };
-  const formatValue = (value) => {
-    if (Array.isArray(value)) {
-      return value.map((item) => (typeof item === "object" ? JSON.stringify(item) : item)).join(" | ");
-    }
-    if (value && typeof value === "object") {
-      return JSON.stringify(value);
-    }
-    if (typeof value === "number") {
-      return formatNumber(value);
-    }
-    return String(value ?? "");
-  };
-
-  return (
-    <section className="panel-card">
-      <h3>{title}</h3>
-      <div className="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              {columns.map((column) => (
-                <th key={column}>{columnLabels[column] || column}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              <tr key={index}>
-                {columns.map((column) => (
-                  <td key={column}>{formatValue(row[column])}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function KpiCard({ label, value, tone = "neutral" }) {
-  return (
-    <section className={`kpi-card kpi-${tone}`}>
-      <span>{label}</span>
-      <strong>{formatNumber(value)}</strong>
-      <i aria-hidden="true" />
     </section>
   );
 }
@@ -416,24 +360,103 @@ function ParetoChart({ title, rows, labelKey, valueKey }) {
   );
 }
 
+function DataTable({ title, rows }) {
+  if (!rows?.length) {
+    return (
+      <section className="panel-card">
+        <h3>{title}</h3>
+        <p>Sin datos todavia.</p>
+      </section>
+    );
+  }
+
+  const columns = Object.keys(rows[0]);
+  const columnLabels = {
+    id: "ID",
+    name: "Nombre",
+    description: "Descripcion",
+    category: "Categoria",
+    stock: "Stock",
+    minimum_stock: "Stock minimo",
+    unit_price: "Precio unitario",
+    expiration_date: "Caducidad",
+    created_at: "Creado",
+    updated_at: "Actualizado",
+    contact_email: "Email",
+    phone: "Telefono",
+    address: "Direccion",
+    products_supplied: "Productos",
+    supplier_id: "ID proveedor",
+    supplier_name: "Proveedor",
+    product_id: "ID producto",
+    product_name: "Producto",
+    items: "Lineas",
+    quantity: "Cantidad",
+    total_amount: "Importe total",
+    status: "Estado",
+    history: "Historial",
+    reason: "Motivo",
+    date: "Fecha",
+    economic_loss: "Perdida economica",
+    orders_count: "Pedidos",
+    wasted_quantity: "Unidades desechadas",
+    expired_products_count: "Productos caducados",
+    expired_units: "Unidades caducadas",
+    expired_economic_loss: "Perdida por caducidad",
+    timestamp: "Fecha",
+    action_label: "Accion",
+    entity_type: "Tipo de entidad",
+    entity_name: "Entidad",
+    summary: "Resumen",
+    enabled: "Activo",
+  };
+
+  return (
+    <section className="panel-card">
+      <h3>{title}</h3>
+      <div className="table-wrapper">
+        <table className="smart-table">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column}>{columnLabels[column] || column}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, index) => (
+              <tr key={row.id || `${title}-${index}`}>
+                {columns.map((column) => (
+                  <td key={column} className={`col-${column}`}>
+                    {renderCellContent(column, row[column])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function KpiCard({ label, value, tone = "neutral" }) {
+  return (
+    <section className={`kpi-card kpi-${tone}`}>
+      <span>{label}</span>
+      <strong>{formatNumber(value)}</strong>
+      <i aria-hidden="true" />
+    </section>
+  );
+}
+
 function StatisticsDashboard({ data }) {
   const productsCount = data.low_stock_products?.length || 0;
-  const wastedUnits = (data.most_wasted_products || []).reduce(
-    (total, row) => total + Number(row.wasted_quantity || 0),
-    0,
-  );
-  const economicLoss = (data.waste_economic_losses || []).reduce(
-    (total, row) => total + Number(row.economic_loss || 0),
-    0,
-  );
-  const ordersCount = (data.orders_by_supplier || []).reduce(
-    (total, row) => total + Number(row.orders_count || 0),
-    0,
-  );
+  const wastedUnits = (data.most_wasted_products || []).reduce((total, row) => total + Number(row.wasted_quantity || 0), 0);
+  const economicLoss = (data.waste_economic_losses || []).reduce((total, row) => total + Number(row.economic_loss || 0), 0);
+  const ordersCount = (data.orders_by_supplier || []).reduce((total, row) => total + Number(row.orders_count || 0), 0);
   const topWaste = (data.most_wasted_products || [])[0];
-  const topLoss = [...(data.waste_economic_losses || [])].sort(
-    (a, b) => Number(b.economic_loss || 0) - Number(a.economic_loss || 0),
-  )[0];
+  const topLoss = [...(data.waste_economic_losses || [])].sort((a, b) => Number(b.economic_loss || 0) - Number(a.economic_loss || 0))[0];
   const averageLoss = wastedUnits ? economicLoss / wastedUnits : 0;
 
   return (
@@ -464,49 +487,9 @@ function StatisticsDashboard({ data }) {
       </div>
 
       <div className="stats-charts">
-        <DonutChart
-          title="Distribucion de productos desechados"
-          rows={data.most_wasted_products}
-          labelKey="product_name"
-          valueKey="wasted_quantity"
-        />
-        <ParetoChart
-          title="Analisis Pareto de perdidas"
-          rows={data.waste_economic_losses}
-          labelKey="reason"
-          valueKey="economic_loss"
-        />
+        <DonutChart title="Distribucion de productos desechados" rows={data.most_wasted_products} labelKey="product_name" valueKey="wasted_quantity" />
+        <ParetoChart title="Analisis Pareto de perdidas" rows={data.waste_economic_losses} labelKey="reason" valueKey="economic_loss" />
       </div>
-    </div>
-  );
-}
-
-export default function DataPanel({ data, title = "Resultados", isRefreshing = false }) {
-  if (!data) {
-    return (
-      <section className="panel-card empty-state">
-        <h3>{title}</h3>
-        <p>Maja mostrara aqui los datos actualizados tras cada orden.</p>
-      </section>
-    );
-  }
-
-  if (Array.isArray(data)) {
-    const isProductList = data.every((row) => "name" in row && "stock" in row && "unit_price" in row);
-    return (
-      <div className={isRefreshing ? "panel-refreshing" : ""}>
-        {isProductList ? <ProductLivePanel title={title} rows={data} /> : <DataTable title={title} rows={data} />}
-      </div>
-    );
-  }
-
-  if (!data.low_stock_products && !data.most_wasted_products) {
-    return <DataTable title={title} rows={[data]} />;
-  }
-
-  return (
-    <div className={isRefreshing ? "panel-refreshing" : ""}>
-      <StatisticsDashboard data={data} />
     </div>
   );
 }
@@ -538,10 +521,7 @@ function ProductLivePanel({ title, rows }) {
                 <strong>{formatNumber(product.stock)}</strong>
               </div>
               <div className="inventory-track">
-                <div
-                  className="inventory-fill"
-                  style={{ width: `${Math.max((Number(product.stock) / maxStock) * 100, 3)}%` }}
-                />
+                <div className="inventory-fill" style={{ width: `${Math.max((Number(product.stock) / maxStock) * 100, 3)}%` }} />
               </div>
               <div className="inventory-meta">
                 <span>Precio {formatNumber(product.unit_price)} EUR</span>
@@ -551,6 +531,32 @@ function ProductLivePanel({ title, rows }) {
           ))}
         </div>
       </section>
+    </div>
+  );
+}
+
+export default function DataPanel({ data, title = "Resultados", isRefreshing = false }) {
+  if (!data) {
+    return (
+      <section className="panel-card empty-state">
+        <h3>{title}</h3>
+        <p>Maja mostrara aqui los datos actualizados tras cada orden.</p>
+      </section>
+    );
+  }
+
+  if (Array.isArray(data)) {
+    const isProductList = data.every((row) => "name" in row && "stock" in row && "unit_price" in row);
+    return <div className={isRefreshing ? "panel-refreshing" : ""}>{isProductList ? <ProductLivePanel title={title} rows={data} /> : <DataTable title={title} rows={data} />}</div>;
+  }
+
+  if (!data.low_stock_products && !data.most_wasted_products) {
+    return <DataTable title={title} rows={[data]} />;
+  }
+
+  return (
+    <div className={isRefreshing ? "panel-refreshing" : ""}>
+      <StatisticsDashboard data={data} />
     </div>
   );
 }
