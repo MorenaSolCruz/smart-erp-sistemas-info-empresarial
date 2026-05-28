@@ -44,15 +44,15 @@ RESPONSE_SCHEMA = {
         "intent": {
             "type": "string",
             "enum": sorted(ALLOWED_INTENTS),
-            "description": "Accion ERP que debe ejecutar el backend.",
+            "description": "Acción ERP que debe ejecutar el backend.",
         },
         "reply": {
             "type": "string",
-            "description": "Respuesta breve en espanol para el usuario.",
+            "description": "Respuesta breve en español para el usuario.",
         },
         "data": {
             "type": "object",
-            "description": "Datos necesarios para ejecutar la accion. Usar objeto vacio si no aplica.",
+            "description": "Datos necesarios para ejecutar la acción. Usar objeto vacío si no aplica.",
             "additionalProperties": True,
         },
     },
@@ -66,11 +66,11 @@ LLM_ERROR_MESSAGE = "El LLM no pudo procesar la solicitud, contacte con el admin
 
 SYSTEM_PROMPT = """
 Eres Maja, el clasificador de intenciones de un prototipo ERP conversacional.
-Tu unica salida debe ser JSON valido con esta forma:
+Tu única salida debe ser JSON válido con esta forma:
 {"intent": "...", "reply": "...", "data": {...}}
 
 No ejecutes operaciones por tu cuenta. Solo interpreta el mensaje del usuario.
-El backend ejecutara la operacion indicada.
+El backend ejecutará la operación indicada.
 Tu trabajo es entender lenguaje natural aunque el usuario escriba con faltas,
 sin tildes, con palabras incompletas o en orden distinto.
 
@@ -80,30 +80,30 @@ Intenciones permitidas:
 - missing_data
 - fallback
 - list_products, create_product, add_product_stock, update_product, delete_product, delete_all_products
-- get_product_stock para preguntas como "cuantos monitores tengo" o "stock de Filtro HEPA"
+- get_product_stock para preguntas como "cuántos monitores tengo" o "stock de Filtro HEPA"
 - list_suppliers, create_supplier, update_supplier, delete_supplier
 - list_purchase_orders, create_purchase_order, receive_purchase_order, cancel_purchase_order, update_purchase_order, delete_purchase_order
 - list_waste, create_waste, update_waste, delete_waste
 - show_statistics
-- show_audit_history para trazabilidad y auditoria
-- configure_auto_replenishment para activar o desactivar la reposicion automatica
+- show_audit_history para trazabilidad y auditoría
+- configure_auto_replenishment para activar o desactivar la reposición automática
 
 Reglas de seguridad:
 - Para eliminar un producto, proveedor, pedido o desecho concreto, usa delete_* directamente.
-- Solo pide confirmation_required si el usuario quiere eliminar todo el inventario, todo el almacen,
+- Solo pide confirmation_required si el usuario quiere eliminar todo el inventario, todo el almacén,
   todos los productos o todos los registros de productos.
 - Si el usuario mezcla varias acciones o condiciones en la misma frase, no adivines. Usa missing_data y pide que lo separe en pasos.
 - Si faltan campos obligatorios, usa missing_data.
-- Si la intencion no es clara, usa fallback.
+- Si la intención no es clara, usa fallback.
 - Si el usuario pregunta que puedes hacer, ejemplos, ayuda, comandos o capacidades, usa help.
-- Si pregunta "que productos tengo", "que hay en inventario", "objetos en stock", usa list_products.
-- Si pregunta "cuantos monitores tengo", "stock de tablets", "cantidad de telefono", usa get_product_stock.
+- Si pregunta "qué productos tengo", "que hay en inventario", "objetos en stock", usa list_products.
+- Si pregunta "cuantos monitores tengo", "stock de tablets", "cantidad de teléfono", usa get_product_stock.
 - Si dice "agrega", "añade", "mete", "introduce", "registra" un producto con unidades/precio,
-  interpreta create_product o add_product_stock segun corresponda.
+  interpreta create_product o add_product_stock según corresponda.
 - Si da precio y unidades para un producto nuevo, usa create_product.
 - Si solo da unidades para un producto, usa add_product_stock.
 
-Campos esperados por intencion:
+Campos esperados por intención:
 - create_product: data.name, data.stock, data.unit_price. Opcionales: description, category, minimum_stock.
 - add_product_stock: data.name, data.quantity. Si el producto no existe, el backend puede crearlo con precio 0.
 - update_product: data.name y al menos uno de new_name, stock, unit_price, category, minimum_stock.
@@ -114,36 +114,36 @@ Campos esperados por intencion:
 - update_supplier: data.name y al menos uno de new_name, contact_email, phone, address.
 - delete_supplier: data.name.
 - create_purchase_order: data.supplier_name, data.items. Cada item necesita product_name y quantity. unit_price opcional.
-- receive_purchase_order: data.supplier_name o data.id. Opcional: data.items si la recepcion es parcial.
+- receive_purchase_order: data.supplier_name o data.id. Opcional: data.items si la recepción es parcial.
 - cancel_purchase_order: data.supplier_name o data.id. Opcional: data.reason.
 - update_purchase_order: data.id, data.supplier_name, data.items. status opcional.
 - delete_purchase_order: data.id.
 - create_waste: data.product_name, data.quantity, data.reason. reason debe ser caducidad, producto dañado o ajuste manual.
 - update_waste: data.id, data.product_name, data.quantity, data.reason.
 - delete_waste: data.id.
-- show_audit_history: data.audit_scope, data.limit y segun el caso data.supplier_name.
+- show_audit_history: data.audit_scope, data.limit y según el caso data.supplier_name.
 - configure_auto_replenishment: data.enabled con valor true o false.
 - list_* y show_statistics: data debe ser {}.
 
-Normaliza nombres propios de productos y proveedores con mayusculas profesionales.
-Responde siempre en espanol profesional y breve.
+Normaliza nombres propios de productos y proveedores con mayúsculas profesionales.
+Responde siempre en español profesional y breve.
 
-Ejemplos de interpretacion:
+Ejemplos de interpretación:
 - "agrega televisor con precio 300 y 5 unidades" -> create_product con name Televisor, stock 5, unit_price 300.
 - "mete 10 ratones al inventario" -> add_product_stock con name Ratones, quantity 10.
-- "cuantos monitores tengo?" -> get_product_stock con name Monitores.
-- "que hay en el inventario?" -> list_products.
+- "cuántos monitores tengo?" -> get_product_stock con name Monitores.
+- "qué hay en el inventario?" -> list_products.
 - "quiero ver proveedores" -> list_suppliers.
 - "haz un pedido a ClimaSur de 8 filtros HEPA" -> create_purchase_order.
 - "recibimos el pedido del proveedor ClimaSur" -> receive_purchase_order.
 - "cancela el pedido del proveedor ClimaSur" -> cancel_purchase_order.
 - "borra el producto Tablet" -> delete_product.
-- "elimina telefono" -> delete_product con name Telefono.
+- "elimina teléfono" -> delete_product con name Teléfono.
 - "borra 3 filtros hepa" -> delete_product con name Filtro Hepa, quantity 3.
 - "elimina todo el inventario" -> confirmation_required con data.pending_action delete_all_products.
 - "confirma eliminar todo el inventario" -> delete_all_products.
-- "muestrame las ultimas 10 acciones sobre este proveedor" -> show_audit_history.
-- "dime los ultimos 35 productos eliminados" -> show_audit_history.
+- "muéstrame las últimas 10 acciones sobre este proveedor" -> show_audit_history.
+- "dime los últimos 35 productos eliminados" -> show_audit_history.
 """.strip()
 
 
@@ -301,7 +301,7 @@ def detect_compound_request(message):
         return {
             "intent": "missing_data",
             "reply": (
-                "He detectado varias acciones en la misma solicitud. Para evitar errores, pÃ­demelas por separado, "
+                "He detectado varias acciones en la misma solicitud. Para evitar errores, pásamelas por separado, "
                 "por ejemplo primero el pedido y luego el borrado."
             ),
             "data": {"reason": "compound_request"},
@@ -316,7 +316,7 @@ def detect_compound_request(message):
             "intent": "missing_data",
             "reply": (
                 "He detectado una solicitud condicional con varias acciones. Para evitar resultados no deseados, "
-                "indÃ­came primero una sola operaciÃ³n."
+                "indícame primero una sola operación."
             ),
             "data": {"reason": "conditional_request"},
         }
@@ -330,7 +330,7 @@ def detect_compound_request(message):
         return {
             "intent": "missing_data",
             "reply": (
-                "He detectado varias consultas en la misma frase. Para evitar ambigÃ¼edades, pÃ­deme primero una sola lista, "
+                "He detectado varias consultas en la misma frase. Para evitar ambigüedades, pídeme primero una sola lista, "
                 "por ejemplo productos o proveedores."
             ),
             "data": {"reason": "multi_target_query"},
@@ -386,7 +386,7 @@ class MockLLMProvider(BaseLLMProvider):
         if self._is_ambiguous_delete(lowered):
             return {
                 "intent": "missing_data",
-                "reply": "Indica qué registro quieres eliminar. Por ejemplo: elimina Telefono o elimina el desecho <id>.",
+                "reply": "Indica qué registro quieres eliminar. Por ejemplo: elimina Teléfono o elimina el desecho <id>.",
             }
 
         for parser in [
@@ -451,14 +451,14 @@ class MockLLMProvider(BaseLLMProvider):
         if any(term in message for term in ["activa", "activar", "habilita", "habilitar", "enciende"]):
             return {
                 "intent": "configure_auto_replenishment",
-                "reply": "Activo la reposicion automatica de pedidos por stock bajo.",
+                "reply": "Activo la reposición automática de pedidos por stock bajo.",
                 "data": {"enabled": True},
             }
 
         if any(term in message for term in ["desactiva", "desactivar", "deshabilita", "deshabilitar", "apaga"]):
             return {
                 "intent": "configure_auto_replenishment",
-                "reply": "Desactivo la reposicion automatica de pedidos.",
+                "reply": "Desactivo la reposición automática de pedidos.",
                 "data": {"enabled": False},
             }
 
@@ -925,7 +925,7 @@ class MockLLMProvider(BaseLLMProvider):
             supplier = display_name(match.group("supplier"))
             return {
                 "intent": "receive_purchase_order",
-                "reply": f"Marco como recibido el ultimo pedido pendiente de {supplier}.",
+                "reply": f"Marco como recibido el último pedido pendiente de {supplier}.",
                 "data": {"supplier_name": supplier},
             }
 
@@ -952,7 +952,7 @@ class MockLLMProvider(BaseLLMProvider):
                 data["reason"] = match.group("reason").strip()
             return {
                 "intent": "cancel_purchase_order",
-                "reply": f"Cancelo el ultimo pedido abierto de {data['supplier_name']}.",
+                "reply": f"Cancelo el último pedido abierto de {data['supplier_name']}.",
                 "data": data,
             }
 
@@ -1117,7 +1117,7 @@ class GeminiProvider(BaseLLMProvider):
                     {
                         "text": (
                             f"{SYSTEM_PROMPT}\n\n"
-                            "Responde solo con JSON valido, sin markdown ni explicaciones extra."
+                            "Responde solo con JSON válido, sin markdown ni explicaciones extra."
                         )
                     }
                 ]
@@ -1147,7 +1147,7 @@ class GeminiProvider(BaseLLMProvider):
                     return result
                 except Exception as exc:
                     last_error = exc
-            raise last_error or RuntimeError("Gemini no devolvio una respuesta util.")
+            raise last_error or RuntimeError("Gemini no devolvió una respuesta útil.")
         except Exception as exc:
             return fallback_result("Gemini", user_message, context, f"error Gemini: {exc}")
 
