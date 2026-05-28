@@ -2,7 +2,7 @@ import os
 import json
 import re
 import unicodedata
-
+from difflib import get_close_matches
 import requests
 
 
@@ -158,6 +158,36 @@ def normalize_text(value):
     value = unicodedata.normalize("NFD", value.strip().lower())
     return "".join(char for char in value if unicodedata.category(char) != "Mn")
 
+def normalize_key(value):
+    value = unicodedata.normalize("NFD", value.strip().lower())
+    value = "".join(char for char in value if unicodedata.category(char) != "Mn")
+    value = re.sub(r"[^a-z0-9\s]", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def singularize_basic(value):
+    words = value.split()
+    result = []
+
+    for word in words:
+        if word.endswith("es") and len(word) > 4:
+            result.append(word[:-2])
+        elif word.endswith("s") and len(word) > 3:
+            result.append(word[:-1])
+        else:
+            result.append(word)
+
+    return " ".join(result)
+
+
+def product_search_keys(value):
+    normalized = normalize_key(value)
+    singular = normalize_key(singularize_basic(normalized))
+
+    return list(dict.fromkeys([
+        normalized,
+        singular,
+    ]))
 
 def display_name(value):
     value = re.sub(r"^(?:llamado|llamada)\s+", "", value.strip(), flags=re.IGNORECASE)
@@ -187,8 +217,9 @@ def extract_email(message):
 
 def extract_phone(message):
     match = re.search(r"\b(?:telefono|tlf|tel)\s+(?P<phone>[\d+ ]+)", message)
+    if not match:
+        match = re.search(r"\bcon el telefono\s+(?P<phone>[\d+ ]+)", message)
     return clean_text_field(match.group("phone")) if match else ""
-
 
 def extract_cif(message):
     match = re.search(r"\bcif\s+(?P<cif>[a-z0-9]+)", message, flags=re.IGNORECASE)
@@ -419,11 +450,13 @@ class MockLLMProvider(BaseLLMProvider):
             }
 
         for parser in [
+            self._parse_product_supplier_question,
             self._parse_pending_purchase_orders,
             self._parse_quick_inventory_add_v2,
             self._parse_quick_inventory_add,
             self._parse_flexible_create_product,
             self._parse_contextual_purchase_order_v2,
+            self._parse_contextual_purchase_order_v3,
             self._parse_contextual_purchase_order,
             self._parse_create_purchase_order,
             self._parse_receive_purchase_order,
@@ -432,7 +465,9 @@ class MockLLMProvider(BaseLLMProvider):
             self._parse_create_product,
             self._parse_update_product,
             self._parse_delete_product,
+            self._parse_supplier_details,
             self._parse_create_supplier,
+            self._parse_update_supplier_phone_direct,
             self._parse_update_supplier,
             self._parse_delete_supplier,
             self._parse_update_purchase_order,
@@ -555,6 +590,20 @@ class MockLLMProvider(BaseLLMProvider):
     def _is_ambiguous_delete(self, message):
         return message in ["elimina", "eliminar", "borra", "borrar", "confirma eliminar", "confirmar eliminar"]
 
+    def _parse_product_supplier_question(self, message):
+        match = re.search(
+            r"(?:a que proveedor|con que proveedor|proveedor).*?(?:se asocia|esta asociado|tiene).*?(?P<product>.+)$",
+            message,
+        )
+        if not match:
+            return None
+
+        return {
+            "intent": "missing_data",
+            "reply": "Los productos no se asocian automáticamente a un proveedor al crearlos. Crea un pedido a un proveedor para vincularlo operativamente.",
+            "data": {"product_name": display_name(match.group("product"))},
+        }
+
     def _list_intent(self, message):
         if not any(
             term in message
@@ -648,7 +697,11 @@ class MockLLMProvider(BaseLLMProvider):
                 }
             raw_product = re.sub(r"^(?:de\s+)?", "", match.group("product")).strip()
             product = display_name(raw_product)
-            item = {"product_name": product, "quantity": int(match.group("quantity"))}
+            item = {
+                    "product_name": product,
+                    "product_search_keys": product_search_keys(raw_product),
+                    "quantity": int(match.group("quantity")),
+                }
             if match.group("price"):
                 item["unit_price"] = decimal_value(match.group("price"))
             return {
@@ -656,6 +709,45 @@ class MockLLMProvider(BaseLLMProvider):
                 "reply": f"Registro un pedido a {supplier}.",
                 "data": {"supplier_name": supplier, "items": [item]},
             }
+        return None
+    
+    def _parse_contextual_purchase_order_v3(self, message):
+        patterns = [
+            r"(?:creale|hazle|crea|haz|genera|registra|pide)(?: un)? pedido de (?P<quantity>\d+) (?P<product>.+)$",
+            r"(?:creale|hazle)(?: un)? pedido al proveedor de (?P<quantity>\d+) (?P<product>.+)$",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, message)
+            if not match:
+                continue
+
+            supplier = self._last_supplier_name()
+            if not supplier:
+                return {
+                    "intent": "missing_data",
+                    "reply": "No tengo un proveedor reciente en memoria. Indica el nombre del proveedor para crear el pedido.",
+                    "data": {},
+                }
+
+            raw_product = clean_text_field(match.group("product"))
+            product = display_name(raw_product)
+
+            return {
+                "intent": "create_purchase_order",
+                "reply": f"Registro un pedido a {supplier}.",
+                "data": {
+                    "supplier_name": supplier,
+                    "items": [
+                        {
+                            "product_name": product,
+                            "quantity": int(match.group("quantity")),
+                            "product_search_keys": product_search_keys(raw_product),
+                        }
+                    ],
+                },
+            }
+
         return None
 
     def _parse_quick_inventory_add(self, message):
@@ -873,6 +965,27 @@ class MockLLMProvider(BaseLLMProvider):
             "reply": f"Registro el proveedor {name}.",
             "data": data,
         }
+    
+    def _parse_update_supplier_phone_direct(self, message):
+        match = re.search(
+            r"(?:actualiza|actualizar|cambia|cambiar|modifica|modificar) "
+            r"(?:el )?telefono (?:de|del proveedor) (?P<name>.+?) a (?P<phone>[\d+ ]+)$",
+            message,
+        )
+        if not match:
+            return None
+
+        name = display_name(match.group("name"))
+        phone = clean_text_field(match.group("phone"))
+
+        return {
+            "intent": "update_supplier",
+            "reply": f"Actualizo el teléfono del proveedor {name}.",
+            "data": {
+                "name": name,
+                "phone": phone,
+            },
+        }
 
     def _parse_update_supplier(self, message):
         if not re.search(r"\b(?:actualiza|actualizar|modifica|modificar|cambia|cambiar)\b.*\bproveedor\b", message):
@@ -920,6 +1033,20 @@ class MockLLMProvider(BaseLLMProvider):
             return None
         name = display_name(match.group("name"))
         return {"intent": "delete_supplier", "reply": f"Elimino el proveedor {name}.", "data": {"name": name}}
+    
+    def _parse_supplier_details(self, message):
+        match = re.search(
+            r"(?:dame|muestrame|mostrar|ver|consulta).*datos.*(?:de|del proveedor) (?P<name>.+)$",
+            message,
+        )
+        if not match:
+            return None
+
+        return {
+            "intent": "list_suppliers",
+            "reply": f"Consulto los datos del proveedor {display_name(match.group('name'))}.",
+            "data": {"name": display_name(match.group("name"))},
+        }
 
     def _parse_create_purchase_order(self, message):
         patterns = [
@@ -935,8 +1062,11 @@ class MockLLMProvider(BaseLLMProvider):
             if not match:
                 continue
             supplier = display_name(match.group("supplier"))
-            product = display_name(match.group("product"))
-            item = {"product_name": product, "quantity": int(match.group("quantity"))}
+            raw_product = clean_text_field(match.group("product"))
+            product = display_name(raw_product)
+            item = {"product_name": product, 
+                    "product_search_keys": product_search_keys(raw_product),
+                    "quantity": int(match.group("quantity"))}
             if match.group("price"):
                 item["unit_price"] = decimal_value(match.group("price"))
             return {
@@ -963,8 +1093,11 @@ class MockLLMProvider(BaseLLMProvider):
                 "reply": "No tengo un proveedor reciente en memoria. Indica el nombre del proveedor para crear el pedido.",
             }
 
-        product = display_name(match.group("product"))
-        item = {"product_name": product, "quantity": int(match.group("quantity"))}
+        raw_product = clean_text_field(match.group("product"))
+        product = display_name(raw_product)
+        item = {"product_name": product, 
+                "product_search_keys": product_search_keys(raw_product),
+                "quantity": int(match.group("quantity"))}
         if match.group("price"):
             item["unit_price"] = decimal_value(match.group("price"))
 
@@ -980,7 +1113,9 @@ class MockLLMProvider(BaseLLMProvider):
             r"del pedido (?:del |de )?proveedor (?P<supplier>.+)$",
             message,
         )
+        
         if partial_match:
+            raw_product = clean_text_field(partial_match.group("product"))
             supplier = display_name(partial_match.group("supplier"))
             return {
                 "intent": "receive_purchase_order",
@@ -989,7 +1124,8 @@ class MockLLMProvider(BaseLLMProvider):
                     "supplier_name": supplier,
                     "items": [
                         {
-                            "product_name": display_name(partial_match.group("product")),
+                            "product_name": display_name(raw_product),
+                            "product_search_keys": product_search_keys(raw_product),
                             "quantity": int(partial_match.group("quantity")),
                         }
                     ],
