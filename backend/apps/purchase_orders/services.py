@@ -1,5 +1,7 @@
 from decimal import Decimal
-
+from difflib import get_close_matches
+import re
+import unicodedata
 from mongoengine.errors import ValidationError
 
 from apps.products.models import Product
@@ -68,13 +70,71 @@ def _build_order_item(product, quantity, unit_price):
     }
     return refresh_order_item(item)
 
+def _dedupe_products_by_normalized_name(products):
+    result = {}
+    for product in products:
+        result.setdefault(normalize_key(product.name), product)
+    return list(result.values())
 
 def _resolve_product(item):
-    if item.get("product_id"):
-        return Product.objects.get(id=item["product_id"])
-    if item.get("product_name"):
-        return get_product_document_by_name(item["product_name"])
-    raise InvalidOrderItemError("Cada item debe incluir product_id o product_name.")
+    product_name = item.get("product_name") or item.get("name")
+
+    if not product_name:
+        raise InvalidOrderItemError("Cada linea del pedido debe indicar un producto.")
+
+    input_keys = []
+
+    for key in item.get("product_search_keys", []):
+        input_keys.extend(build_product_keys(key))
+
+    input_keys.extend(build_product_keys(product_name))
+    input_keys = list(dict.fromkeys(input_keys))
+
+    products = list(Product.objects.all())
+
+    product_map = {}
+
+    for product in products:
+        for key in build_product_keys(product.name):
+            product_map.setdefault(key, []).append(product)
+
+    exact_matches = []
+    for key in input_keys:
+        exact_matches.extend(product_map.get(key, []))
+
+    exact_matches = _dedupe_products_by_normalized_name(exact_matches)
+
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+
+    if len(exact_matches) > 1:
+        names = ", ".join(product.name for product in exact_matches)
+        raise InvalidOrderItemError(
+            f"He encontrado varios productos compatibles: {names}. Indica el nombre exacto antes de continuar."
+        )
+
+    fuzzy_matches = []
+    available_keys = list(product_map.keys())
+
+    for key in input_keys:
+        matches = get_close_matches(key, available_keys, n=3, cutoff=0.72)
+        for matched_key in matches:
+            fuzzy_matches.extend(product_map[matched_key])
+
+    fuzzy_matches = _dedupe_products_by_normalized_name(fuzzy_matches)
+
+    if len(fuzzy_matches) == 1:
+        return fuzzy_matches[0]
+
+    if len(fuzzy_matches) > 1:
+        names = ", ".join(product.name for product in fuzzy_matches)
+        raise InvalidOrderItemError(
+            f"He encontrado varios productos muy parecidos: {names}. Indica cuál quieres usar exactamente."
+        )
+
+    raise InvalidOrderItemError(
+        f"No existe ningún artículo llamado {product_name} en el inventario."
+    )
 
 
 def _normalize_items(raw_items):
@@ -96,6 +156,33 @@ def _normalize_items(raw_items):
         total_amount += unit_price * quantity
     return normalized_items, total_amount
 
+def normalize_key(value):
+    value = unicodedata.normalize("NFD", value.strip().lower())
+    value = "".join(char for char in value if unicodedata.category(char) != "Mn")
+    value = re.sub(r"[^a-z0-9\s]", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def singularize_basic(value):
+    words = value.split()
+    result = []
+
+    for word in words:
+        if word.endswith("es") and len(word) > 4:
+            result.append(word[:-2])
+        elif word.endswith("s") and len(word) > 3:
+            result.append(word[:-1])
+        else:
+            result.append(word)
+
+    return " ".join(result)
+
+
+def build_product_keys(value):
+    normalized = normalize_key(value)
+    singular = normalize_key(singularize_basic(normalized))
+
+    return list(dict.fromkeys([normalized, singular]))
 
 def create_purchase_order(data):
     supplier = Supplier.objects.get(id=data["supplier_id"])

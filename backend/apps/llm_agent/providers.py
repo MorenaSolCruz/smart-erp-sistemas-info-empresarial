@@ -450,6 +450,7 @@ class MockLLMProvider(BaseLLMProvider):
             }
 
         for parser in [
+            self._parse_pending_product_selection,
             self._parse_product_supplier_question,
             self._parse_pending_purchase_orders,
             self._parse_quick_inventory_add_v2,
@@ -1034,6 +1035,37 @@ class MockLLMProvider(BaseLLMProvider):
         name = display_name(match.group("name"))
         return {"intent": "delete_supplier", "reply": f"Elimino el proveedor {name}.", "data": {"name": name}}
     
+    def _parse_pending_product_selection(self, message):
+        pending = (self._context or {}).get("pending_action")
+
+        if not pending:
+            return None
+
+        if pending.get("intent") != "create_purchase_order":
+            return None
+
+        selected_product = message
+        selected_product = re.sub(r"^(?:quiero usar|usar|usa|elijo|selecciono)\s+", "", selected_product).strip()
+
+        if not selected_product:
+            return None
+
+        return {
+            "intent": "create_purchase_order",
+            "reply": f"Registro el pedido usando {display_name(selected_product)}.",
+            "data": {
+                "supplier_name": pending.get("supplier_name"),
+                "items": [
+                    {
+                        "product_name": display_name(selected_product),
+                        "quantity": pending.get("quantity"),
+                        "product_search_keys": product_search_keys(selected_product),
+                    }
+                ],
+                "resolved_from_pending_selection": True,
+            },
+        }
+
     def _parse_supplier_details(self, message):
         match = re.search(
             r"(?:dame|muestrame|mostrar|ver|consulta).*datos.*(?:de|del proveedor) (?P<name>.+)$",
