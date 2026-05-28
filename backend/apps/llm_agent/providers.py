@@ -110,7 +110,7 @@ Campos esperados por intención:
 - delete_product: data.name. Opcional: data.quantity si solo quiere borrar una cantidad del stock.
 - delete_all_products: data debe ser {}.
 - get_product_stock: data.name.
-- create_supplier: data.name, data.contact_email. Opcionales: phone, address, products_supplied.
+- create_supplier: data.name, data.contact_email. Opcionales: phone, address, products_supplied, cif.
 - update_supplier: data.name y al menos uno de new_name, contact_email, phone, address.
 - delete_supplier: data.name.
 - create_purchase_order: data.supplier_name, data.items. Cada item necesita product_name y quantity. unit_price opcional.
@@ -174,6 +174,36 @@ def decimal_value(value, default=0):
 def clean_identifier(value):
     return value.strip().strip(".:,;")
 
+def clean_text_field(value):
+    if not value:
+        return ""
+    return value.strip().strip(".,;")
+
+
+def extract_email(message):
+    match = re.search(r"\bemail\s+(?P<email>\S+)", message)
+    return clean_text_field(match.group("email")) if match else None
+
+
+def extract_phone(message):
+    match = re.search(r"\b(?:telefono|tlf|tel)\s+(?P<phone>[\d+ ]+)", message)
+    return clean_text_field(match.group("phone")) if match else ""
+
+
+def extract_cif(message):
+    match = re.search(r"\bcif\s+(?P<cif>[a-z0-9]+)", message, flags=re.IGNORECASE)
+    return match.group("cif").upper() if match else ""
+
+
+def extract_number_after_keywords(message, keywords):
+    pattern = rf"\b(?:{'|'.join(keywords)})\s+(?P<number>\d+(?:[.,]\d+)?)"
+    match = re.search(pattern, message)
+    return decimal_value(match.group("number")) if match else None
+
+
+def extract_int_after_keywords(message, keywords):
+    value = extract_number_after_keywords(message, keywords)
+    return int(value) if value is not None else None
 
 def extract_json_object(text):
     text = text.strip()
@@ -286,7 +316,6 @@ def detect_compound_request(message):
     multi_connector_patterns = [
         r"\b(?:y luego|luego|despues|despues de eso|ademas)\b",
         r"\bsi\b.+\b(?:entonces|borra|elimina|crea|pide|muestra|lista|actualiza)\b",
-        r"[;,]",
     ]
     has_compound_connector = any(re.search(pattern, normalized) for pattern in multi_connector_patterns)
 
@@ -297,7 +326,7 @@ def detect_compound_request(message):
         )
     ) >= 2
 
-    if len(set(matched_categories)) >= 2 and (has_compound_connector or multiple_action_verbs):
+    if has_compound_connector and multiple_action_verbs:
         return {
             "intent": "missing_data",
             "reply": (
@@ -696,32 +725,50 @@ class MockLLMProvider(BaseLLMProvider):
         }
 
     def _parse_create_product(self, message):
-        match = re.search(
-            r"(?:crea|crear|registra|registrar) un producto llamado (?P<name>.+?)"
-            r"(?: con descripcion (?P<description>.+?))?"
-            r"(?: en categoria (?P<category>.+?))?"
-            r"(?: con stock (?P<stock>\d+))?"
-            r"(?: y stock minimo (?P<minimum_stock>\d+))?"
-            r"(?: y precio (?P<price>\d+(?:[.,]\d+)?))?$",
+        if not re.search(r"\b(?:crea|crear|registra|registrar|agrega|agregar|anade|añade)\b.*\bproducto\b", message):
+            return None
+
+        name_match = re.search(
+            r"producto(?:\s+llamado|\s+con nombre)?\s+(?P<name>.+?)(?=\s+(?:con\s+)?(?:stock|precio|categoria|descripcion|minimo|stock minimo)\b|,|$)",
             message,
         )
-        if not match:
-            return None
-        data = product_payload(match)
+
+        stock = extract_int_after_keywords(message, ["stock", "cantidad"])
+        price = extract_number_after_keywords(message, ["precio", "vale", "cuesta"])
+        minimum_stock = extract_int_after_keywords(message, ["stock minimo", "minimo"])
+
+        category_match = re.search(r"\bcategoria\s+(?P<category>.+?)(?=\s+(?:stock|precio|descripcion|minimo|stock minimo)\b|,|$)", message)
+        description_match = re.search(r"\bdescripcion\s+(?P<description>.+?)(?=\s+(?:stock|precio|categoria|minimo|stock minimo)\b|,|$)", message)
+
+        if not name_match:
+            return {"intent": "missing_data", "reply": "Falta el nombre del producto.", "data": {}}
+
         missing = []
-        if match.group("stock") is None:
+        if stock is None:
             missing.append("stock")
-        if match.group("price") is None:
+        if price is None:
             missing.append("precio")
+
         if missing:
             return {
                 "intent": "missing_data",
                 "reply": f"Faltan datos obligatorios para crear el producto: {', '.join(missing)}.",
+                "data": {},
             }
+
+        name = display_name(name_match.group("name"))
+
         return {
             "intent": "create_product",
-            "reply": f"Creo el producto {data['name']}.",
-            "data": data,
+            "reply": f"Creo el producto {name}.",
+            "data": {
+                "name": name,
+                "stock": stock,
+                "unit_price": price,
+                "description": clean_text_field(description_match.group("description")) if description_match else "",
+                "category": clean_text_field(category_match.group("category")) if category_match else "",
+                "minimum_stock": minimum_stock or 0,
+            },
         }
 
     def _parse_update_product(self, message):
@@ -781,58 +828,90 @@ class MockLLMProvider(BaseLLMProvider):
         return {"intent": "delete_product", "reply": reply, "data": data}
 
     def _parse_create_supplier(self, message):
-        match = re.search(
-            r"(?:registra|registrar|crea|crear) un proveedor llamado (?P<name>.+?)"
-            r"(?: con email (?P<email>\S+))?"
-            r"(?: y telefono (?P<phone>[\d+ ]+))?"
-            r"(?: y direccion (?P<address>.+))?$",
+        if not re.search(r"\b(?:registra|registrar|crea|crear|alta|dar de alta)\b.*\bproveedor\b", message):
+            return None
+
+        name_match = re.search(
+            r"proveedor(?:\s+llamado|\s+con nombre)?\s+(?P<name>.+?)(?=\s+(?:con\s+)?(?:email|telefono|tlf|tel|direccion|cif)\b|,|$)",
             message,
         )
-        if not match:
-            return None
-        if not match.group("email"):
+
+        email = extract_email(message)
+        phone = extract_phone(message)
+        cif = extract_cif(message)
+
+        address_match = re.search(
+            r"\bdireccion\s+(?P<address>.+?)(?=\s+(?:email|telefono|tlf|tel|cif)\b|,|$)",
+            message,
+        )
+
+        if not name_match:
+            return {"intent": "missing_data", "reply": "Falta el nombre del proveedor.", "data": {}}
+
+        if not email:
             return {
                 "intent": "missing_data",
                 "reply": "Falta el email del proveedor. Ejemplo: registra un proveedor llamado ClimaSur con email contacto@climasur.com.",
+                "data": {},
             }
-        name = display_name(match.group("name"))
+
+        name = display_name(name_match.group("name"))
+
+        data = {
+            "name": name,
+            "contact_email": email,
+            "phone": phone,
+            "address": clean_text_field(address_match.group("address")) if address_match else "",
+            "products_supplied": [],
+        }
+
+        if cif:
+            data["cif"] = cif
+
         return {
             "intent": "create_supplier",
             "reply": f"Registro el proveedor {name}.",
-            "data": {
-                "name": name,
-                "contact_email": match.group("email") or "proveedor@example.com",
-                "phone": (match.group("phone") or "").strip(),
-                "address": match.group("address") or "",
-                "products_supplied": [],
-            },
+            "data": data,
         }
 
     def _parse_update_supplier(self, message):
-        match = re.search(
-            r"(?:actualiza|actualizar|modifica|modificar) (?:el )?proveedor (?P<name>.+?)"
-            r"(?: con nombre (?P<new_name>.+?))?"
-            r"(?: con email (?P<email>\S+))?"
-            r"(?: y telefono (?P<phone>[\d+ ]+))?"
-            r"(?: y direccion (?P<address>.+))?$",
+        if not re.search(r"\b(?:actualiza|actualizar|modifica|modificar|cambia|cambiar)\b.*\bproveedor\b", message):
+            return None
+
+        name_match = re.search(
+            r"proveedor\s+(?P<name>.+?)(?=\s+(?:con\s+)?(?:nombre|email|telefono|tlf|tel|direccion|cif)\b|,|$)",
             message,
         )
-        if not match:
-            return None
-        data = {"name": display_name(match.group("name"))}
-        if match.group("new_name"):
-            data["new_name"] = display_name(match.group("new_name"))
-        if match.group("email"):
-            data["contact_email"] = match.group("email")
-        if match.group("phone"):
-            data["phone"] = match.group("phone").strip()
-        if match.group("address"):
-            data["address"] = match.group("address")
+
+        if not name_match:
+            return {"intent": "missing_data", "reply": "Indica qué proveedor quieres actualizar.", "data": {}}
+
+        data = {"name": display_name(name_match.group("name"))}
+
+        new_name_match = re.search(r"\bnombre\s+(?P<new_name>.+?)(?=\s+(?:email|telefono|tlf|tel|direccion|cif)\b|,|$)", message)
+        email = extract_email(message)
+        phone = extract_phone(message)
+        cif = extract_cif(message)
+        address_match = re.search(r"\bdireccion\s+(?P<address>.+?)(?=\s+(?:email|telefono|tlf|tel|cif)\b|,|$)", message)
+
+        if new_name_match:
+            data["new_name"] = display_name(new_name_match.group("new_name"))
+        if email:
+            data["contact_email"] = email
+        if phone:
+            data["phone"] = phone
+        if address_match:
+            data["address"] = clean_text_field(address_match.group("address"))
+        if cif:
+            data["cif"] = cif
+
         if len(data) == 1:
             return {
                 "intent": "missing_data",
-                "reply": "Indica al menos un campo para actualizar el proveedor, por ejemplo email, teléfono, dirección o nombre.",
+                "reply": "Indica al menos un campo para actualizar el proveedor, por ejemplo email, teléfono, dirección, CIF o nombre.",
+                "data": {},
             }
+
         return {"intent": "update_supplier", "reply": f"Actualizo el proveedor {data['name']}.", "data": data}
 
     def _parse_delete_supplier(self, message):
