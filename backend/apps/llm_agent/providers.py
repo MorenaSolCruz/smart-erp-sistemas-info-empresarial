@@ -17,21 +17,27 @@ ALLOWED_INTENTS = {
     "update_product",
     "delete_product",
     "delete_all_products",
+    "query_products",
     "get_product_stock",
     "list_suppliers",
     "create_supplier",
     "update_supplier",
     "delete_supplier",
+    "delete_all_suppliers",
     "list_purchase_orders",
     "create_purchase_order",
     "receive_purchase_order",
     "cancel_purchase_order",
     "update_purchase_order",
     "delete_purchase_order",
+    "query_purchase_orders",
+    "complete_purchase_order",
+    "cancel_latest_purchase_order",
     "list_waste",
     "create_waste",
     "update_waste",
     "delete_waste",
+    "delete_all_waste",
     "show_statistics",
     "show_audit_history",
     "configure_auto_replenishment",
@@ -415,6 +421,9 @@ class MockLLMProvider(BaseLLMProvider):
         audit_request = self._parse_audit_history_request(lowered)
         if audit_request:
             return audit_request
+        operational_query = self._parse_operational_query(lowered)
+        if operational_query:
+            return operational_query
 
         if self._is_statistics_request(lowered):
             return {"intent": "show_statistics", "reply": "Consulto las estadísticas del ERP."}
@@ -471,11 +480,15 @@ class MockLLMProvider(BaseLLMProvider):
             self._parse_update_supplier_phone_direct,
             self._parse_update_supplier,
             self._parse_delete_supplier,
+            self._parse_delete_all_suppliers,
             self._parse_update_purchase_order,
             self._parse_delete_purchase_order,
+            self._parse_complete_purchase_order,
+            self._parse_cancel_latest_purchase_order,
             self._parse_create_waste,
             self._parse_update_waste,
             self._parse_delete_waste,
+            self._parse_delete_all_waste,
         ]:
             parsed = parser(lowered)
             if parsed:
@@ -619,6 +632,30 @@ class MockLLMProvider(BaseLLMProvider):
             return "list_purchase_orders"
         if "desecho" in message or "merma" in message:
             return "list_waste"
+        return None
+
+    def _parse_operational_query(self, message):
+        if any(term in message for term in ["stock bajo", "poco stock", "bajo stock"]):
+            threshold = extract_int_after_keywords(message, ["de", "a", "menor que"])
+            return {
+                "intent": "query_products",
+                "reply": "Consulto los productos con stock bajo.",
+                "data": {"kind": "low_stock", "threshold": threshold},
+            }
+        if "mas stock" in message or "mayor stock" in message:
+            return {"intent": "query_products", "reply": "Consulto el producto con mas stock.", "data": {"kind": "most_stock"}}
+        if "precio" in message and any(term in message for term in ["desc", "caro", "caros", "mayor"]):
+            return {"intent": "query_products", "reply": "Ordeno los productos por precio descendente.", "data": {"kind": "price_desc"}}
+        if any(term in message for term in ["valor del inventario", "valor inventario"]):
+            return {"intent": "query_products", "reply": "Calculo el valor economico del inventario.", "data": {"kind": "inventory_value"}}
+        if "agotad" in message:
+            return {"intent": "query_products", "reply": "Consulto productos agotados.", "data": {"kind": "out_of_stock"}}
+        if any(term in message for term in ["resumen inventario", "resumen del inventario"]):
+            return {"intent": "query_products", "reply": "Preparo un resumen del inventario actual.", "data": {"kind": "summary"}}
+        if "pedidos pendientes" in message:
+            return {"intent": "query_purchase_orders", "reply": "Consulto los pedidos pendientes.", "data": {"kind": "pending"}}
+        if any(term in message for term in ["proveedor con mas pedidos", "proveedor con más pedidos"]):
+            return {"intent": "query_purchase_orders", "reply": "Consulto el proveedor con mas pedidos.", "data": {"kind": "top_supplier"}}
         return None
 
     def _parse_pending_purchase_orders(self, message):
@@ -1249,6 +1286,17 @@ class MockLLMProvider(BaseLLMProvider):
             return None
         return {"intent": "delete_purchase_order", "reply": "Elimino el pedido indicado.", "data": {"id": clean_identifier(match.group("id"))}}
 
+    def _parse_complete_purchase_order(self, message):
+        match = re.search(r"(?:marca|marcar) (?:el )?pedido (?P<id>[a-f0-9]{1,24}) como completado", message)
+        if not match:
+            return None
+        return {"intent": "complete_purchase_order", "reply": "Marco el pedido como completado.", "data": {"id": clean_identifier(match.group("id"))}}
+
+    def _parse_cancel_latest_purchase_order(self, message):
+        if "ultimo pedido" in message and any(term in message for term in ["cancela", "cancelar", "anula", "anular"]):
+            return {"intent": "cancel_latest_purchase_order", "reply": "Cancelo el ultimo pedido creado.", "data": {}}
+        return None
+
     def _parse_create_waste(self, message):
         match = re.search(
             r"(?:registra|registrar|crea|crear) un desecho de (?P<quantity>\d+) unidades de (?P<product>.+?) "
@@ -1293,6 +1341,28 @@ class MockLLMProvider(BaseLLMProvider):
         if not match:
             return None
         return {"intent": "delete_waste", "reply": "Elimino el desecho indicado.", "data": {"id": clean_identifier(match.group("id"))}}
+
+    def _parse_delete_all_suppliers(self, message):
+        if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar"]):
+            return None
+        if not ("proveedor" in message and any(term in message for term in ["todo", "todos", "registrados"])):
+            return None
+        return {
+            "intent": "confirmation_required",
+            "reply": "Esta accion eliminara todos los proveedores. Quieres continuar? Responde si o no.",
+            "data": {"pending_action": "delete_all_suppliers", "confirmation_token": confirmation_token("delete_all_suppliers", "Elimino todos los proveedores.", {})},
+        }
+
+    def _parse_delete_all_waste(self, message):
+        if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar"]):
+            return None
+        if not ("desecho" in message and any(term in message for term in ["todo", "todos", "registrados"])):
+            return None
+        return {
+            "intent": "confirmation_required",
+            "reply": "Esta accion eliminara todos los desechos registrados. Quieres continuar? Responde si o no.",
+            "data": {"pending_action": "delete_all_waste", "confirmation_token": confirmation_token("delete_all_waste", "Elimino todos los desechos registrados.", {})},
+        }
 
 
 class OpenAIProvider(BaseLLMProvider):

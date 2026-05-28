@@ -53,8 +53,20 @@ def list_waste_records():
     return [serialize_waste(record) for record in WasteRecord.objects.order_by("-date")]
 
 
+def resolve_waste_record(record_id):
+    record_id = str(record_id).strip()
+    if len(record_id) < 24:
+        matches = [record for record in WasteRecord.objects if str(record.id).startswith(record_id)]
+        if not matches:
+            raise WasteRecord.DoesNotExist("Desecho no encontrado.")
+        if len(matches) > 1:
+            raise ValidationError("Hay varios desechos con ese ID corto. Usa algunos caracteres más del ID.")
+        return matches[0]
+    return WasteRecord.objects.get(id=record_id)
+
+
 def get_waste_record_by_id(record_id):
-    return serialize_waste(WasteRecord.objects.get(id=record_id))
+    return serialize_waste(resolve_waste_record(record_id))
 
 
 def create_waste_record(data):
@@ -84,7 +96,7 @@ def create_waste_record(data):
 
 
 def update_waste_record(record_id, data):
-    record = WasteRecord.objects.get(id=record_id)
+    record = resolve_waste_record(record_id)
 
     if data.get("product_id"):
         product = Product.objects.get(id=data["product_id"])
@@ -111,7 +123,15 @@ def update_waste_record(record_id, data):
 
 
 def delete_waste_record(record_id):
-    record = WasteRecord.objects.get(id=record_id)
+    record = resolve_waste_record(record_id)
     adjust_stock(record.product, record.quantity)
     record.delete()
     return {"deleted": True, "id": record_id}
+
+
+def clear_waste_records():
+    count = WasteRecord.objects.count()
+    for record in list(WasteRecord.objects):
+        adjust_stock(record.product, record.quantity)
+        record.delete()
+    return {"deleted": True, "deleted_count": count}

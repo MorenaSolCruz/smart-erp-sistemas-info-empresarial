@@ -99,6 +99,52 @@ def list_products():
     return [serialize_product(product) for product in Product.objects.order_by("name")]
 
 
+def product_insights(kind, limit=None, threshold=None, search=None):
+    products = list(Product.objects)
+    if kind == "low_stock":
+        max_stock = int(threshold if threshold is not None else 5)
+        products = [product for product in products if int(product.stock) < max_stock]
+        products.sort(key=lambda product: product.stock)
+        return [serialize_product(product) for product in products[: limit or len(products)]]
+    if kind == "most_stock":
+        products.sort(key=lambda product: product.stock, reverse=True)
+        return [serialize_product(product) for product in products[:1]]
+    if kind == "price_desc":
+        products.sort(key=lambda product: product.unit_price, reverse=True)
+        return [serialize_product(product) for product in products[: limit or len(products)]]
+    if kind == "name_contains":
+        needle = normalize_lookup(search or "")
+        return [serialize_product(product) for product in products if needle in normalize_lookup(product.name)]
+    if kind == "inventory_value":
+        total_value = sum(float(product.unit_price) * int(product.stock) for product in products)
+        total_units = sum(int(product.stock) for product in products)
+        return {
+            "products_count": len(products),
+            "total_units": total_units,
+            "inventory_value": total_value,
+        }
+    if kind == "out_of_stock":
+        products = [product for product in products if int(product.stock) == 0]
+        products.sort(key=lambda product: product.name)
+        return [serialize_product(product) for product in products]
+    if kind == "top_expensive":
+        products.sort(key=lambda product: product.unit_price, reverse=True)
+        return [serialize_product(product) for product in products[: limit or 10]]
+    if kind == "summary":
+        total_value = sum(float(product.unit_price) * int(product.stock) for product in products)
+        total_units = sum(int(product.stock) for product in products)
+        exhausted = sum(1 for product in products if int(product.stock) == 0)
+        low_stock = sum(1 for product in products if int(product.stock) < 5)
+        return {
+            "products_count": len(products),
+            "total_units": total_units,
+            "inventory_value": total_value,
+            "out_of_stock_count": exhausted,
+            "low_stock_count": low_stock,
+        }
+    return [serialize_product(product) for product in products]
+
+
 def get_product_by_id(product_id):
     from apps.waste.services import process_expired_products
 

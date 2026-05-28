@@ -1,8 +1,28 @@
 from datetime import datetime
+import unicodedata
 
 from mongoengine.errors import NotUniqueError, ValidationError
 
 from apps.suppliers.models import Supplier
+
+
+def normalize_lookup(value):
+    value = unicodedata.normalize("NFD", str(value or "").strip().lower())
+    value = "".join(char for char in value if unicodedata.category(char) != "Mn")
+    return " ".join(value.split())
+
+
+def resolve_supplier_matches(name):
+    requested = normalize_lookup(name)
+    requested_without_digits = normalize_lookup("".join(char for char in str(name or "") if not char.isdigit()))
+    matches = []
+    for supplier in Supplier.objects:
+        supplier_name = normalize_lookup(supplier.name)
+        if supplier_name == requested or (requested_without_digits and supplier_name == requested_without_digits):
+            matches.append(supplier)
+            if len(matches) > 1:
+                break
+    return matches
 
 
 def serialize_supplier(supplier):
@@ -10,6 +30,7 @@ def serialize_supplier(supplier):
         "id": str(supplier.id),
         "name": supplier.name,
         "contact_email": supplier.contact_email,
+        "tax_id": supplier.tax_id,
         "phone": supplier.phone,
         "address": supplier.address,
         "products_supplied": supplier.products_supplied,
@@ -33,6 +54,8 @@ def get_supplier_document_by_name(name):
 
     matches = list(Supplier.objects(name__iexact=name).limit(2))
     if not matches:
+        matches = resolve_supplier_matches(name)
+    if not matches:
         raise Supplier.DoesNotExist("Proveedor no encontrado.")
     if len(matches) > 1:
         raise ValidationError("Hay varios proveedores con nombres muy parecidos. Usa el nombre exacto que aparece al listar proveedores.")
@@ -40,13 +63,19 @@ def get_supplier_document_by_name(name):
 
 
 def create_supplier(data):
-    if Supplier.objects(name__iexact=data["name"]).first():
-        raise NotUniqueError("Ya existe un proveedor con ese nombre.")
+    existing_supplier = Supplier.objects(name__iexact=data["name"]).first()
+    if not existing_supplier:
+        matches = resolve_supplier_matches(data["name"])
+        if len(matches) == 1:
+            existing_supplier = matches[0]
+    if existing_supplier:
+        return update_supplier(str(existing_supplier.id), data)
 
     now = datetime.utcnow()
     supplier = Supplier(
         name=data["name"],
         contact_email=data["contact_email"],
+        tax_id=data.get("tax_id", ""),
         phone=data.get("phone", ""),
         address=data.get("address", ""),
         products_supplied=data.get("products_supplied", []),
@@ -60,7 +89,7 @@ def create_supplier(data):
 def update_supplier(supplier_id, data):
     supplier = Supplier.objects.get(id=supplier_id)
 
-    for field in ["name", "contact_email", "phone", "address", "products_supplied"]:
+    for field in ["name", "contact_email", "tax_id", "phone", "address", "products_supplied"]:
         if field in data:
             setattr(supplier, field, data[field])
 
@@ -79,4 +108,14 @@ def delete_supplier(supplier_id):
 
     supplier.delete()
     return {"deleted": True, "id": supplier_id}
+
+
+def clear_suppliers():
+    from apps.purchase_orders.models import PurchaseOrder
+
+    orders_count = PurchaseOrder.objects.count()
+    PurchaseOrder.objects.delete()
+    count = Supplier.objects.count()
+    Supplier.objects.delete()
+    return {"deleted": True, "deleted_count": count, "orders_deleted": orders_count}
 
