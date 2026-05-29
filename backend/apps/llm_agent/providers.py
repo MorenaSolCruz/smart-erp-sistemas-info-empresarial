@@ -30,6 +30,7 @@ ALLOWED_INTENTS = {
     "cancel_purchase_order",
     "update_purchase_order",
     "delete_purchase_order",
+    "delete_all_purchase_orders",
     "query_purchase_orders",
     "complete_purchase_order",
     "cancel_latest_purchase_order",
@@ -521,6 +522,7 @@ class MockLLMProvider(BaseLLMProvider):
             self._parse_delete_all_suppliers,
             self._parse_update_purchase_order,
             self._parse_delete_purchase_order,
+            self._parse_delete_all_purchase_orders,
             self._parse_complete_purchase_order,
             self._parse_cancel_latest_purchase_order,
             self._parse_create_waste,
@@ -1382,6 +1384,24 @@ class MockLLMProvider(BaseLLMProvider):
         if not match:
             return None
         return {"intent": "delete_purchase_order", "reply": "Elimino el pedido indicado.", "data": {"id": clean_identifier(match.group("id"))}}
+
+    def _parse_delete_all_purchase_orders(self, message):
+        if not any(term in message for term in ["elimina", "eliminar", "borra", "borrar"]):
+            return None
+        if not ("pedido" in message and any(term in message for term in ["todo", "todos", "registrados"])):
+            return None
+        return {
+            "intent": "confirmation_required",
+            "reply": "Esta accion eliminara todos los pedidos registrados. Quieres continuar? Responde si o no.",
+            "data": {
+                "pending_action": "delete_all_purchase_orders",
+                "confirmation_token": confirmation_token(
+                    "delete_all_purchase_orders",
+                    "Elimino todos los pedidos registrados.",
+                    {},
+                ),
+            },
+        }
 
     def _parse_complete_purchase_order(self, message):
         match = re.search(r"(?:marca|marcar) (?:el )?pedido (?P<id>[a-f0-9]{1,24}) como completado", message)

@@ -41,6 +41,7 @@ const actionLabels = {
   cancel_purchase_order: "Cancelacion de pedido",
   update_purchase_order: "Actualizacion de pedido",
   delete_purchase_order: "Baja de pedido",
+  delete_all_purchase_orders: "Baja completa de pedidos",
   query_purchase_orders: "Consulta avanzada de pedidos",
   complete_purchase_order: "Actualizacion de pedido",
   cancel_latest_purchase_order: "Cancelacion de pedido",
@@ -64,6 +65,9 @@ const cancellationMessages = {
   delete_purchase_order: "Operacion cancelada. El pedido se mantiene registrado.",
   cancel_purchase_order: "Operacion cancelada. El pedido sigue abierto sin cambios.",
   delete_all_products: "Operacion cancelada. El inventario se mantiene sin cambios.",
+  delete_all_suppliers: "Operacion cancelada. Los proveedores se mantienen sin cambios.",
+  delete_all_purchase_orders: "Operacion cancelada. Los pedidos se mantienen registrados.",
+  delete_all_waste: "Operacion cancelada. Los desechos se mantienen sin cambios.",
 };
 
 const providerNotes = {
@@ -157,6 +161,7 @@ export default function ChatPage() {
       cancel_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
       update_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
       delete_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
+      delete_all_purchase_orders: ["Pedidos actualizados", getPurchaseOrders],
       complete_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
       cancel_latest_purchase_order: ["Pedidos actualizados", getPurchaseOrders],
       list_waste: ["Desechos actualizados", getWasteRecords],

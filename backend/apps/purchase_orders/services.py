@@ -369,6 +369,22 @@ def delete_purchase_order(order_id):
     }
 
 
+def clear_purchase_orders():
+    deleted_count = 0
+    affected_products = []
+
+    for order in list(PurchaseOrder.objects.order_by("-created_at")):
+        deleted_count += 1
+        deleted_order = delete_purchase_order(str(order.id))
+        affected_products.extend(deleted_order.get("affected_products", []))
+
+    return {
+        "deleted": True,
+        "deleted_count": deleted_count,
+        "affected_products": affected_products,
+    }
+
+
 def order_insights(kind):
     orders = list(PurchaseOrder.objects.order_by("-created_at"))
     if kind == "pending":

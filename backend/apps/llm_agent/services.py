@@ -21,6 +21,7 @@ from apps.purchase_orders.services import (
     append_items_to_purchase_order,
     cancel_latest_purchase_order,
     cancel_purchase_order,
+    clear_purchase_orders,
     create_purchase_order,
     delete_purchase_order,
     list_purchase_orders,
@@ -136,7 +137,9 @@ def confirmation_prompt_for(intent, data):
     if intent == "delete_all_products":
         return "Esta accion eliminara todo el inventario de productos. Quieres eliminarlo? Responde si o no."
     if intent == "delete_all_suppliers":
-        return "Esta accion eliminara todos los proveedores sin pedidos asociados. Quieres continuar? Responde si o no."
+        return "Esta accion eliminara todos los proveedores y sus pedidos asociados. Quieres continuar? Responde si o no."
+    if intent == "delete_all_purchase_orders":
+        return "Esta accion eliminara todos los pedidos registrados. Quieres continuar? Responde si o no."
     if intent == "delete_all_waste":
         return "Esta accion eliminara todos los desechos registrados. Quieres continuar? Responde si o no."
     return "La accion solicitada requiere confirmacion. Quieres continuar? Responde si o no."
@@ -152,6 +155,7 @@ def maybe_require_confirmation(message, result):
         "cancel_purchase_order",
         "delete_all_products",
         "delete_all_suppliers",
+        "delete_all_purchase_orders",
         "delete_all_waste",
     }
     if intent not in sensitive_intents:
@@ -1019,6 +1023,15 @@ def execute_agent_action(message, provider_name=None, request_id=None):
             if intent == "delete_purchase_order":
                 clear_pending_action()
                 data = delete_purchase_order(result["data"]["id"])
+                response = build_agent_response(
+                    provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
+                )
+                operation.success(intent=intent)
+                return response
+
+            if intent == "delete_all_purchase_orders":
+                clear_pending_action()
+                data = clear_purchase_orders()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], data, provider_status=provider_status, request_id=operation.request_id
                 )

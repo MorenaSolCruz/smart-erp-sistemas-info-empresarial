@@ -20,6 +20,24 @@ class InventoryDeleteParsingTests(unittest.TestCase):
         self.assertEqual(result["intent"], "confirmation_required")
         self.assertEqual(result["data"]["pending_action"], "delete_all_products")
 
+    def test_delete_all_suppliers_requires_confirmation(self):
+        result = self.provider.generate_response("Borra todos los proveedores", {})
+
+        self.assertEqual(result["intent"], "confirmation_required")
+        self.assertEqual(result["data"]["pending_action"], "delete_all_suppliers")
+
+    def test_delete_all_purchase_orders_requires_confirmation(self):
+        result = self.provider.generate_response("Elimina los pedidos", {})
+
+        self.assertEqual(result["intent"], "confirmation_required")
+        self.assertEqual(result["data"]["pending_action"], "delete_all_purchase_orders")
+
+    def test_delete_all_waste_requires_confirmation(self):
+        result = self.provider.generate_response("Elimina todos los desechos registrados", {})
+
+        self.assertEqual(result["intent"], "confirmation_required")
+        self.assertEqual(result["data"]["pending_action"], "delete_all_waste")
+
     def test_disable_auto_replenishment_is_not_misread_as_enable(self):
         CONVERSATION_MEMORY["auto_replenishment_enabled"] = True
 
