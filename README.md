@@ -1,6 +1,6 @@
 # ERP Conversacional con LLM
 
-Prototipo de ERP conversacional orientado a una practica universitaria de Sistemas de la Informacion Empresarial. Toda la interaccion con el sistema se realiza por lenguaje natural desde un chat: el usuario no navega por menus tradicionales, sino que pide acciones al asistente y este decide que operacion ejecutar sobre el backend.
+Prototipo de ERP conversacional desarrollado para una practica universitaria de Sistemas de la Informacion Empresarial. Toda la interaccion principal se realiza desde un chat: el usuario escribe instrucciones en lenguaje natural y el backend interpreta la intencion para ejecutar operaciones sobre inventario, proveedores, pedidos, desechos y estadisticas.
 
 ## 1. Objetivo
 
@@ -18,52 +18,52 @@ El proyecto implementa un ERP conversacional con:
 ## 2. Stack tecnologico
 
 - Python 3.12
-- Django
+- Django 5
 - Django REST Framework
 - MongoDB
 - MongoEngine
-- React
-- Vite
+- React 18
+- Vite 5
 - Docker
 - Docker Compose
 
 ## 3. Arquitectura general
 
-El repositorio se divide en tres servicios:
+El repositorio se organiza en tres piezas:
 
-- `frontend`: cliente React con interfaz tipo chat
-- `backend`: API Django REST y agente conversacional
-- `mongodb`: base de datos persistente
+- `frontend`: cliente React con interfaz tipo chat y panel lateral de datos
+- `backend`: API Django REST, logica de negocio y agente conversacional
+- `mongodb`: persistencia de datos
 
 Flujo principal:
 
 1. El usuario escribe un mensaje en el frontend.
-2. El frontend llama a `POST /api/agent/chat/`.
-3. El modulo `llm_agent` interpreta la intencion.
+2. El frontend envia la peticion a `POST /api/agent/chat/`.
+3. El modulo `llm_agent` clasifica la intencion.
 4. El backend ejecuta la operacion correspondiente sobre MongoDB.
-5. La respuesta devuelve texto, accion ejecutada y datos para renderizar tablas o graficos.
+5. La respuesta devuelve texto, accion ejecutada y datos para el panel.
 
 ## 4. Requisitos
 
-Solo necesitas tener instalado:
+Para ejecutar el proyecto en local solo hace falta:
 
 - Docker
 - Docker Compose
 
-No hace falta instalar manualmente Python, Node.js ni MongoDB si ejecutas el proyecto con contenedores.
+No es necesario instalar Python, Node.js ni MongoDB manualmente si se usa la ejecucion con contenedores.
 
 ## 5. Configuracion inicial
 
-Antes del primer arranque hay que crear el archivo `backend/.env` a partir del ejemplo:
+Antes del primer arranque crea el archivo `backend/.env` a partir del ejemplo:
 
 ```powershell
 Copy-Item .\backend\.env.example .\backend\.env
 ```
 
-Alternativa:
+El frontend ya dispone de `frontend/.env.example`. Si quieres un archivo local explicito, puedes copiarlo tambien:
 
 ```powershell
-cp .\backend\.env.example .\backend\.env
+Copy-Item .\frontend\.env.example .\frontend\.env
 ```
 
 ## 6. Como ejecutar en local con Docker
@@ -74,18 +74,20 @@ Desde la raiz del proyecto:
 docker compose up --build
 ```
 
-Tambien se incluyen scripts opcionales:
+Tambien existen scripts de apoyo:
 
 - Windows PowerShell: `./scripts/dev-up.ps1`
 - Linux/macOS: `sh ./scripts/dev-up.sh`
 
-En el arranque del backend se ejecuta automaticamente:
+En el arranque del backend se hace automaticamente:
 
 1. espera a MongoDB
 2. carga datos demo si la base esta vacia
-3. levanta el servidor Django
+3. levanta Django en `0.0.0.0:8000`
 
-## 7. URLs del sistema
+## 7. URLs y endpoints
+
+URLs locales:
 
 - Frontend: [http://localhost:5173](http://localhost:5173)
 - Backend API: [http://localhost:8000](http://localhost:8000)
@@ -99,38 +101,63 @@ Endpoints utiles:
 - `GET /api/waste/`
 - `GET /api/statistics/overview/`
 - `POST /api/agent/chat/`
+- `GET /api/agent/metrics/`
 
-## 8. Proveedores LLM y claves API
+## 8. Variables de entorno
 
-No, no es obligatorio configurar un token para que el proyecto funcione. Por defecto usa `mock`, asi que se puede probar sin claves reales.
+### Backend
 
-Las claves se configuran en:
-
-- [backend/.env](C:\Users\moren\Documents\Repositorios\smart-erp-sistemas-info-empresarial\backend\.env)
+Archivo: `backend/.env`
 
 Variables disponibles:
 
-- `DEFAULT_LLM_PROVIDER=mock`
-- `OPENAI_API_KEY=`
-- `OPENAI_MODEL=gpt-4o-mini`
-- `GEMINI_API_KEY=`
-- `GEMINI_MODEL=gemini-2.5-flash`
-- `ANTHROPIC_API_KEY=`
-- `ANTHROPIC_MODEL=claude-3-5-haiku-latest`
-- `LOCAL_LLM_URL=http://localhost:11434`
-- `LOCAL_LLM_MODEL=llama3.1:8b`
-
-Ejemplos:
-
-- para usar OpenAI:
-
 ```env
-DEFAULT_LLM_PROVIDER=openai
-OPENAI_API_KEY=tu_clave_aqui
+DJANGO_SECRET_KEY=django-insecure-change-me
+DJANGO_DEBUG=True
+DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,backend
+MONGODB_URI=mongodb://mongodb:27017/erp_llm
+MONGODB_DB_NAME=erp_llm
+DEFAULT_LLM_PROVIDER=mock
+OPENAI_API_KEY=
 OPENAI_MODEL=gpt-4o-mini
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-3-5-haiku-latest
+LOCAL_LLM_URL=http://localhost:11434
+LOCAL_LLM_MODEL=llama3.1:8b
 ```
 
-- para usar Gemini:
+### Frontend
+
+Archivo opcional: `frontend/.env`
+
+```env
+VITE_API_BASE_URL=http://localhost:8000/api
+VITE_DEFAULT_LLM_PROVIDER=mock
+```
+
+## 9. Proveedores LLM soportados
+
+El proyecto puede funcionar sin claves externas usando `mock`, que es la opcion mas comoda para una demo o una entrega academica.
+
+Proveedores soportados:
+
+- `mock`
+- `openai`
+- `gemini`
+- `gemini-2.5-flash`
+- `gemini-2.5-flash-lite`
+- `gemini-2.0-flash`
+- `claude`
+
+Notas:
+
+- el alias `gemini` usa internamente `gemini-2.5-flash`
+- el selector del frontend permite cambiar el proveedor en caliente
+- si no configuras claves API, el sistema sigue siendo usable con `mock`
+
+Ejemplo para Gemini:
 
 ```env
 DEFAULT_LLM_PROVIDER=gemini
@@ -138,17 +165,7 @@ GEMINI_API_KEY=tu_clave_aqui
 GEMINI_MODEL=gemini-2.5-flash
 ```
 
-- para usar Claude:
-
-```env
-DEFAULT_LLM_PROVIDER=claude
-ANTHROPIC_API_KEY=tu_clave_aqui
-ANTHROPIC_MODEL=claude-3-5-haiku-latest
-```
-
-Si no configuras ninguna clave, el sistema seguira funcionando con `mock`.
-
-## 9. Funcionalidades implementadas
+## 10. Funcionalidades implementadas
 
 ### CRUD principal
 
@@ -178,7 +195,7 @@ Si un producto tiene `expiration_date` vencida y stock disponible:
 
 ### Memoria operativa del chat
 
-El asistente recuerda contexto reciente para hacer el dialogo mas natural.
+El asistente recuerda contexto reciente para permitir conversaciones mas naturales.
 
 Ejemplo:
 
@@ -191,16 +208,16 @@ En el segundo mensaje ya no hace falta repetir el proveedor.
 
 El chat pide confirmacion antes de acciones masivas o especialmente destructivas como:
 
-- vaciar inventario
-- borrar todos los proveedores
-- eliminar los pedidos
-- eliminar todos los desechos registrados
+- `Elimina todo el inventario`
+- `Borra todos los proveedores`
+- `Elimina los pedidos`
+- `Elimina todos los desechos registrados`
 
-Las operaciones sobre registros concretos, como eliminar un proveedor, borrar un pedido o eliminar un producto especifico, se ejecutan directamente por conversacion. Esto mantiene la demo mas fluida y evita pasos innecesarios cuando el usuario ya ha indicado claramente el registro que quiere modificar.
+Las operaciones sobre registros concretos, como eliminar un proveedor concreto o borrar un pedido concreto, siguen siendo directas para mantener la demo fluida.
 
 ### Sugerencias proactivas
 
-Si una operacion deja un producto por debajo del stock minimo, el sistema avisa en la respuesta.
+Si una operacion deja un producto por debajo del stock minimo, el sistema lo indica en la respuesta.
 
 Ejemplo:
 
@@ -214,12 +231,13 @@ Se puede activar o desactivar por prompt:
 
 - `Activa la reposicion automatica`
 - `Desactiva la reposicion automatica`
+- `Genera automaticamente pedidos cuando un producto se quede sin stock`
 
-Cuando esta activa, si una operacion deja un producto por debajo del stock minimo, el backend intenta generar automaticamente un pedido al proveedor asociado a ese producto.
+Cuando esta activa, si una operacion deja un producto por debajo del umbral configurado, el backend intenta crear un pedido automaticamente para el proveedor asociado.
 
 ### Auditoria y trazabilidad por prompt
 
-No hay botones especificos para ello: se consulta desde el propio chat.
+No hay una pantalla separada para esto: se consulta desde el propio chat.
 
 Ejemplos:
 
@@ -227,26 +245,41 @@ Ejemplos:
 - `Muestrame las ultimas 10 acciones sobre el proveedor TecnoSur`
 - `Dime cuales son los ultimos 35 productos eliminados`
 
-Si el usuario pide mas registros de los que existen, el sistema responde de forma parcial y lo explica. Por ejemplo, si pide 35 y solo hay 10, indicara que solo existen 10 y mostrara esos 10.
+## 11. Datos demo
 
-### Datos demo automáticos
+Si la base de datos esta vacia, el backend carga automaticamente un seed demo al arrancar.
 
-Si la base de datos esta vacia, el backend carga automaticamente:
+Estado demo esperado:
 
-- proveedores demo
-- productos demo
-- pedidos demo
-- desechos demo
+- 5 productos: `Filtro HEPA`, `Sensor Termico`, `Valvula Industrial`, `Guante Nitrilo`, `Kit Analitico`
+- 3 proveedores: `TecnoSur`, `ClimaPro`, `NovaLab`
+- 2 pedidos demo
+- 2 desechos demo
 
-Esto permite hacer una demo fuerte desde el primer minuto sin preparar datos a mano.
+Nota importante:
 
-## 10. Como probar el agente conversacional
+- aunque el seed crea inicialmente 1 desecho manual, el propio sistema procesa productos caducados al arrancar y deja finalmente 2 desechos en el estado demo normal
+
+## 12. Como volver al estado demo inicial
+
+La forma mas sencilla es vaciar la persistencia de MongoDB y volver a levantar el proyecto:
+
+```bash
+docker compose down -v
+docker compose up --build
+```
+
+Atencion:
+
+- `docker compose down -v` elimina los datos persistidos de MongoDB de esta demo local
+
+## 13. Como probar el agente conversacional
 
 1. Abre el frontend en [http://localhost:5173](http://localhost:5173).
 2. Escribe instrucciones en el chat.
 3. Revisa la respuesta textual y el panel lateral.
 
-Tambien puedes probar por API:
+Tambien se puede probar por API:
 
 ```bash
 curl -X POST http://localhost:8000/api/agent/chat/ \
@@ -254,7 +287,7 @@ curl -X POST http://localhost:8000/api/agent/chat/ \
   -d "{\"message\":\"Muestrame todos los productos\",\"provider\":\"mock\"}"
 ```
 
-## 11. Prompts recomendados para la demo
+## 14. Prompts recomendados para la demo
 
 ### Demo basica
 
@@ -269,7 +302,7 @@ curl -X POST http://localhost:8000/api/agent/chat/ \
 - `Crea un pedido al proveedor ClimaSur de 10 unidades de Filtro HEPA`
 - `Registra un desecho de 3 unidades de Filtro HEPA por caducidad`
 - `Elimina el proveedor ClimaSur`
-- `Elimina pedido <id corto>`
+- `Elimina pedido <id>`
 - `Elimina producto Filtro HEPA`
 
 ### Memoria operativa
@@ -308,59 +341,45 @@ curl -X POST http://localhost:8000/api/agent/chat/ \
 - `Desactiva las alertas automaticas de stock`
 - `Genera automaticamente pedidos cuando un producto se quede sin stock`
 
-### Reposicion automatica
-
-- `Activa la reposicion automatica`
-- `Consulta el stock de Sensor Termico`
-- `Desactiva la reposicion automatica`
-
 ### Trazabilidad
 
 - `Muestrame las ultimas 10 acciones sobre este proveedor`
 - `Dime cuales son los ultimos 35 productos eliminados`
 
-## 12. Notas para la demo con datos demo
-
-El seed demo solo se ejecuta si MongoDB esta vacia.
-
-Si ya habias arrancado antes y quieres volver a una demo limpia, puedes borrar el volumen de Mongo y volver a levantar:
-
-```bash
-docker compose down -v
-docker compose up --build
-```
-
-Atencion: `docker compose down -v` elimina los datos persistidos de MongoDB de esta demo local.
-
-## 13. Estructura del proyecto
+## 15. Estructura del proyecto
 
 ```text
 smart-erp-sistemas-info-empresarial/
-├── backend/
-├── frontend/
-├── docker-compose.yml
-├── README.md
-└── .gitignore
+|-- backend/
+|-- frontend/
+|-- scripts/
+|-- docker-compose.yml
+|-- README.md
+`-- .gitignore
 ```
 
-## 14. Estado actual
+## 16. Notas para entrega
 
-La base ya incluye:
+Si el proyecto se va a entregar comprimido en `.zip`, lo recomendable es incluir:
 
-- API REST funcional para entidades principales
-- persistencia en MongoDB
-- agente conversacional con memoria operativa
-- caducidad automatica
-- confirmaciones inteligentes
-- sugerencias proactivas
-- reposicion automatica configurable
-- auditoria y trazabilidad por prompt
-- interfaz web de chat
-- dashboard estadistico
-- carga automatica de datos demo
-- arranque unificado con Docker
+- codigo fuente completo
+- `README.md`
+- `docker-compose.yml`
+- `backend/.env.example`
+- `frontend/.env.example`
 
-## 15. Comando principal
+Conviene no incluir:
+
+- `.git/`
+- `frontend/node_modules/`
+- `frontend/dist/`
+- `mongodb_data/`
+- `__pycache__/`
+- caches de pruebas o de herramientas
+
+Tampoco conviene compartir `backend/.env` si contiene claves reales.
+
+## 17. Comando principal
 
 ```bash
 docker compose up --build
