@@ -17,6 +17,8 @@ ACTION_LABELS = {
     "delete_supplier": "Baja de proveedor",
     "list_purchase_orders": "Consulta de pedidos",
     "create_purchase_order": "Alta de pedido",
+    "receive_purchase_order": "Recepcion de pedido",
+    "cancel_purchase_order": "Cancelacion de pedido",
     "update_purchase_order": "Actualizacion de pedido",
     "delete_purchase_order": "Baja de pedido",
     "list_waste": "Consulta de desechos",

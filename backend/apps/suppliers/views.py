@@ -1,4 +1,4 @@
-from mongoengine.errors import DoesNotExist, NotUniqueError
+from mongoengine.errors import DoesNotExist, NotUniqueError, ValidationError
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -13,6 +13,10 @@ from apps.suppliers.services import (
 )
 
 
+def sanitize_supplier_response(data):
+    return {key: value for key, value in data.items() if not key.startswith("_")}
+
+
 class SupplierListCreateView(APIView):
     def get(self, request):
         return Response(list_suppliers())
@@ -22,7 +26,10 @@ class SupplierListCreateView(APIView):
         serializer.is_valid(raise_exception=True)
         try:
             supplier = create_supplier(serializer.validated_data)
-            return Response(supplier, status=status.HTTP_201_CREATED)
+            response_status = (
+                status.HTTP_201_CREATED if supplier.get("_sync_status") == "created" else status.HTTP_200_OK
+            )
+            return Response(sanitize_supplier_response(supplier), status=response_status)
         except NotUniqueError:
             return Response({"detail": "Ya existe un proveedor con ese nombre."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -38,7 +45,7 @@ class SupplierDetailView(APIView):
         serializer = SupplierSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            return Response(update_supplier(supplier_id, serializer.validated_data))
+            return Response(sanitize_supplier_response(update_supplier(supplier_id, serializer.validated_data)))
         except DoesNotExist:
             return Response({"detail": "Proveedor no encontrado."}, status=status.HTTP_404_NOT_FOUND)
         except NotUniqueError:
@@ -48,7 +55,7 @@ class SupplierDetailView(APIView):
         serializer = SupplierSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         try:
-            return Response(update_supplier(supplier_id, serializer.validated_data))
+            return Response(sanitize_supplier_response(update_supplier(supplier_id, serializer.validated_data)))
         except DoesNotExist:
             return Response({"detail": "Proveedor no encontrado."}, status=status.HTTP_404_NOT_FOUND)
         except NotUniqueError:
@@ -59,4 +66,5 @@ class SupplierDetailView(APIView):
             return Response(delete_supplier(supplier_id))
         except DoesNotExist:
             return Response({"detail": "Proveedor no encontrado."}, status=status.HTTP_404_NOT_FOUND)
-
+        except ValidationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

@@ -118,6 +118,7 @@ Variables disponibles:
 - `ANTHROPIC_API_KEY=`
 - `ANTHROPIC_MODEL=claude-3-5-haiku-latest`
 - `LOCAL_LLM_URL=http://localhost:11434`
+- `LOCAL_LLM_MODEL=llama3.1:8b`
 
 Ejemplos:
 
@@ -192,6 +193,7 @@ El chat pide confirmacion antes de acciones masivas o especialmente destructivas
 
 - vaciar inventario
 - borrar todos los proveedores
+- eliminar los pedidos
 - eliminar todos los desechos registrados
 
 Las operaciones sobre registros concretos, como eliminar un proveedor, borrar un pedido o eliminar un producto especifico, se ejecutan directamente por conversacion. Esto mantiene la demo mas fluida y evita pasos innecesarios cuando el usuario ya ha indicado claramente el registro que quiere modificar.
@@ -281,6 +283,9 @@ curl -X POST http://localhost:8000/api/agent/chat/ \
 - responde `si` o `no`
 
 - `Elimina todo el inventario`
+- responde `si` o `no`
+
+- `Elimina los pedidos`
 - responde `si` o `no`
 
 - `Elimina todos los desechos registrados`
