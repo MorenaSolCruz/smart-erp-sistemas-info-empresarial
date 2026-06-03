@@ -11,26 +11,31 @@ from apps.statistics.services import (
 
 
 class StatisticsOverviewView(APIView):
+    # Devuelve el dashboard completo de indicadores para el panel derecho.
     def get(self, request):
         return Response(statistics_overview())
 
 
 class LowStockProductsView(APIView):
+    # Lista productos con menos stock para detectar necesidades de reposicion.
     def get(self, request):
         return Response(low_stock_products())
 
 
 class MostWastedProductsView(APIView):
+    # Agrupa desechos para conocer que productos se desperdician mas.
     def get(self, request):
         return Response(most_wasted_products())
 
 
 class WasteEconomicLossesView(APIView):
+    # Calcula perdidas economicas acumuladas por motivo de desecho.
     def get(self, request):
         return Response(waste_economic_losses())
 
 
 class OrdersBySupplierView(APIView):
+    # Resume cuantos pedidos e importe total tiene cada proveedor.
     def get(self, request):
         return Response(orders_by_supplier())
 

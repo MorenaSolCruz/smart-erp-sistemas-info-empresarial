@@ -13,6 +13,7 @@ import ChatMessage from "../components/ChatMessage";
 import DataPanel from "../components/DataPanel";
 
 const initialMessages = [
+  // Mensaje inicial que orienta al usuario sobre ordenes posibles del ERP.
   {
     role: "assistant",
     content:
@@ -22,6 +23,7 @@ const initialMessages = [
 ];
 
 const actionLabels = {
+  // Traduce las acciones internas del backend a etiquetas legibles en la interfaz.
   list_products: "Consulta de productos",
   create_product: "Alta de producto",
   add_product_stock: "Entrada de inventario",
@@ -60,6 +62,7 @@ const actionLabels = {
 };
 
 const cancellationMessages = {
+  // Respuestas locales cuando el usuario cancela una accion pendiente de confirmacion.
   delete_supplier: "Operacion cancelada. El proveedor se mantiene sin cambios.",
   update_purchase_order: "Operacion cancelada. El pedido no ha sido modificado.",
   delete_purchase_order: "Operacion cancelada. El pedido se mantiene registrado.",
@@ -71,6 +74,7 @@ const cancellationMessages = {
 };
 
 const providerNotes = {
+  // Texto de ayuda para el selector de proveedor LLM.
   mock: "Modo de demostracion sin llamadas a APIs externas.",
   gemini: "Usa Gemini si la clave API esta configurada.",
   "gemini-2.5-flash": "Modelo equilibrado para operaciones del ERP.",
@@ -79,10 +83,12 @@ const providerNotes = {
 };
 
 function normalizeMessage(message) {
+  // Normaliza texto del usuario para comparar comandos sin depender de tildes.
   return message.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
 function detectThemeCommand(message) {
+  // Detecta ordenes locales de tema claro/oscuro sin consultar al backend.
   const normalized = normalizeMessage(message);
   const wantsThemeChange = ["modo", "tema", "theme", "oscuro", "claro", "dark", "light"].some((term) =>
     normalized.includes(term),
@@ -107,7 +113,14 @@ function detectThemeCommand(message) {
 }
 
 export default function ChatPage() {
+  // Pantalla principal: combina chat, selector LLM, estado del backend y panel de datos.
   const defaultProvider = import.meta.env.VITE_DEFAULT_LLM_PROVIDER || "gemini-2.5-flash";
+  // Estados principales de React:
+  // - provider: decide que LLM usa el backend.
+  // - messages/input/loading: controlan la conversacion.
+  // - resultData/panelTitle: alimentan el panel derecho.
+  // - pendingAction: guarda acciones que esperan confirmacion "si/no".
+  // - backendReady/backendChecking: evitan mandar ordenes si Django aun arranca.
   const [provider, setProvider] = useState(defaultProvider);
   const [messages, setMessages] = useState(initialMessages);
   const [input, setInput] = useState("");
@@ -121,6 +134,7 @@ export default function ChatPage() {
   const [backendChecking, setBackendChecking] = useState(true);
 
   useEffect(() => {
+    // Al cargar la pantalla, comprueba backend y muestra estadisticas iniciales.
     const initializeBackend = async () => {
       try {
         await pingBackend();
@@ -137,11 +151,13 @@ export default function ChatPage() {
   }, []);
 
   const applyTheme = (nextTheme) => {
+    // Guarda el tema visual para que se mantenga al recargar la pagina.
     setTheme(nextTheme);
     localStorage.setItem("erp-theme", nextTheme);
   };
 
   const refreshPanel = async (action) => {
+    // Segun la accion ejecutada, decide que endpoint refresca el panel lateral.
     const dashboardByAction = {
       list_products: ["Inventario actualizado", getProducts],
       create_product: ["Inventario actualizado", getProducts],
@@ -193,6 +209,7 @@ export default function ChatPage() {
   };
 
   const ensureBackendReady = async () => {
+    // Evita enviar ordenes si Django/MongoDB todavia no estan disponibles.
     if (backendReady) {
       return true;
     }
@@ -211,6 +228,8 @@ export default function ChatPage() {
   };
 
   const handleSubmit = async (event) => {
+    // Flujo principal del chat: valida entrada, gestiona tema/confirmaciones,
+    // llama al agente y actualiza mensajes + panel de resultados.
     event.preventDefault();
     if (!input.trim() || loading) {
       return;
@@ -231,6 +250,7 @@ export default function ChatPage() {
       const requestedTheme = detectThemeCommand(userMessage);
 
       if (requestedTheme) {
+        // Cambio de tema local: no consume LLM ni toca datos del ERP.
         applyTheme(requestedTheme);
         setMessages((current) => [
           ...current,
@@ -247,6 +267,7 @@ export default function ChatPage() {
       }
 
       if (pendingAction && ["no", "n", "cancelar"].includes(normalizedMessage)) {
+        // Si habia una accion sensible pendiente, aqui se cancela sin llamar al backend.
         const cancelledAction = pendingAction.pending_action;
         setPendingAction(null);
         setMessages((current) => [
@@ -261,6 +282,7 @@ export default function ChatPage() {
       }
 
       const outgoingMessage =
+        // Si el usuario responde "si", se envia el token de confirmacion al backend.
         pendingAction && ["si", "s", "yes"].includes(normalizedMessage)
           ? pendingAction.confirmation_token || "confirma eliminar todo el inventario"
           : userMessage;
@@ -272,6 +294,7 @@ export default function ChatPage() {
       const providerDetail = response.provider_status ? ` | ${response.provider_status}` : "";
 
       if (response.action === "confirmation_required" && response.data?.pending_action) {
+        // El backend pide confirmacion para operaciones sensibles o masivas.
         setPendingAction(response.data);
       } else {
         setPendingAction(null);
@@ -287,11 +310,14 @@ export default function ChatPage() {
       ]);
 
       const directPanelTitles = {
+        // Estas acciones ya devuelven datos listos para pintar; no hace falta
+        // llamar otra vez a un endpoint de lista.
         show_audit_history: "Trazabilidad",
         configure_auto_replenishment: "Reposicion automatica",
       };
 
       if (directPanelTitles[response.action] && response.data) {
+        // Algunas acciones muestran directamente los datos devueltos por el agente.
         setPanelTitle(directPanelTitles[response.action]);
         setResultData(response.data);
       } else {
@@ -317,6 +343,7 @@ export default function ChatPage() {
   };
 
   const handleComposerKeyDown = (event) => {
+    // Permite enviar con Enter y reservar Shift+Enter por si se quisiera texto largo.
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       event.currentTarget.form.requestSubmit();
@@ -326,6 +353,7 @@ export default function ChatPage() {
   return (
     <main className={`layout theme-${theme}`}>
       <section className="app-shell">
+        {/* Cabecera: nombre de la app, descripcion corta y selector del proveedor LLM. */}
         <header className="topbar">
           <div className="brand-lockup">
             <div className="brand-mark" aria-hidden="true">
@@ -359,6 +387,7 @@ export default function ChatPage() {
         </header>
 
         <div className="content-grid">
+          {/* Panel izquierdo: conversacion y formulario para mandar ordenes al agente. */}
           <section className="conversation-panel">
             <div className="panel-heading">
               <div>
@@ -371,6 +400,7 @@ export default function ChatPage() {
             </div>
 
             <div className="messages">
+              {/* Historial visual de mensajes. Cada respuesta incluye meta con accion/proveedor. */}
               {messages.map((message, index) => (
                 <ChatMessage
                   key={`${message.role}-${index}`}
@@ -383,6 +413,7 @@ export default function ChatPage() {
             </div>
 
             <form className="composer" onSubmit={handleSubmit}>
+              {/* Composer: caja de texto que envia la orden al backend con Enter o boton. */}
               <label className="composer-label" htmlFor="jarvis-order">
                 Enviar orden a Maja
               </label>
@@ -400,6 +431,7 @@ export default function ChatPage() {
             </form>
           </section>
 
+          {/* Panel derecho: muestra el resultado de la ultima accion o el dashboard. */}
           <aside className="data-panel">
             <div className="panel-heading">
               <div>

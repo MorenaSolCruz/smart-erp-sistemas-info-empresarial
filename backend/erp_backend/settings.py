@@ -14,6 +14,7 @@ DEBUG = os.getenv("DJANGO_DEBUG", "True").lower() == "true"
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 
 INSTALLED_APPS = [
+    # Aplicaciones Django/DRF y modulos funcionales del ERP.
     "django.contrib.staticfiles",
     "corsheaders",
     "rest_framework",
@@ -64,6 +65,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 CORS_ALLOW_ALL_ORIGINS = True
 
 REST_FRAMEWORK = {
+    # La API devuelve JSON y no exige autenticacion porque es un prototipo academico.
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
@@ -94,4 +96,5 @@ LOGGING = {
     },
 }
 
+# Abre la conexion con MongoDB al cargar la configuracion de Django.
 connect_to_mongo()

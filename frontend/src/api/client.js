@@ -1,12 +1,16 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api";
 
 function delay(ms) {
+  // Pequena espera reutilizable para reintentar cuando el backend aun arranca.
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
 }
 
 async function fetchWithRetry(url, options = {}, retries = 1) {
+  // Envuelve fetch y reintenta errores de conexion tipicos al levantar Docker.
+  // Esto mejora la experiencia cuando el usuario abre el frontend mientras
+  // Django/MongoDB todavia estan terminando de arrancar.
   try {
     return await fetch(url, options);
   } catch (error) {
@@ -19,6 +23,8 @@ async function fetchWithRetry(url, options = {}, retries = 1) {
 }
 
 export async function postAgentMessage(payload) {
+  // Envia al backend el mensaje escrito en el chat y recibe accion + datos.
+  // La respuesta alimenta dos zonas: burbuja de Maja y panel derecho.
   const response = await fetchWithRetry(
     `${API_BASE_URL}/agent/chat/`,
     {
@@ -40,6 +46,7 @@ export async function postAgentMessage(payload) {
 }
 
 export async function getStatistics() {
+  // Carga el resumen estadistico que se muestra en el panel derecho.
   const response = await fetchWithRetry(`${API_BASE_URL}/statistics/overview/`, {}, 1);
   if (!response.ok) {
     throw new Error("No se pudieron cargar las estadisticas.");
@@ -48,6 +55,7 @@ export async function getStatistics() {
 }
 
 export async function pingBackend() {
+  // Comprueba si el backend esta listo usando el endpoint de metricas.
   const response = await fetchWithRetry(`${API_BASE_URL}/agent/metrics/`, {}, 1);
   if (!response.ok) {
     throw new Error("El backend todavia no esta disponible.");
@@ -56,6 +64,8 @@ export async function pingBackend() {
 }
 
 async function getResource(path, errorMessage) {
+  // Funcion generica para refrescar listas: productos, proveedores, pedidos y desechos.
+  // Centralizarlo evita repetir manejo de errores en cada boton/accion del panel.
   const response = await fetchWithRetry(`${API_BASE_URL}${path}`, {}, 1);
   if (!response.ok) {
     throw new Error(errorMessage);

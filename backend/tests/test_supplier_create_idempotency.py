@@ -1,3 +1,5 @@
+# Pruebas de proveedores: comprueban que crear un proveedor existente no duplique
+# registros y actualice datos cuando corresponde.
 from datetime import datetime, timedelta
 import unittest
 

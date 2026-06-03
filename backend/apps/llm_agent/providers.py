@@ -46,6 +46,8 @@ ALLOWED_INTENTS = {
 
 
 RESPONSE_SCHEMA = {
+    # Esquema usado por proveedores que soportan respuesta estructurada. Obliga
+    # al LLM a devolver intent/reply/data para que el backend pueda ejecutar.
     "type": "object",
     "properties": {
         "intent": {
@@ -71,6 +73,7 @@ CONFIRMATION_PREFIX = "confirm_action::"
 LLM_ERROR_MESSAGE = "El LLM no pudo procesar la solicitud, contacte con el administrador."
 
 
+# Prompt base que se envia a proveedores LLM reales para que devuelvan acciones JSON del ERP.
 SYSTEM_PROMPT = """
 Eres Maja, el clasificador de intenciones de un prototipo ERP conversacional.
 Tu única salida debe ser JSON válido con esta forma:
@@ -155,6 +158,7 @@ Ejemplos de interpretación:
 
 
 class BaseLLMProvider:
+    # Clase base: todos los proveedores deben devolver una accion normalizada del ERP.
     name = "base"
 
     def generate_response(self, user_message, context):
@@ -162,6 +166,7 @@ class BaseLLMProvider:
 
 
 def build_contextual_user_message(user_message, context):
+    # Anade memoria conversacional al mensaje para que el LLM entienda referencias recientes.
     context = context or {}
     context_lines = []
 
@@ -187,10 +192,12 @@ def build_contextual_user_message(user_message, context):
 
 
 def normalize_text(value):
+    """Normaliza texto basico para comparar comandos sin depender de tildes."""
     value = unicodedata.normalize("NFD", value.strip().lower())
     return "".join(char for char in value if unicodedata.category(char) != "Mn")
 
 def normalize_key(value):
+    """Quita tildes y simbolos para comparar nombres escritos de formas distintas."""
     value = unicodedata.normalize("NFD", value.strip().lower())
     value = "".join(char for char in value if unicodedata.category(char) != "Mn")
     value = re.sub(r"[^a-z0-9\s]", " ", value)
@@ -198,6 +205,7 @@ def normalize_key(value):
 
 
 def singularize_basic(value):
+    """Convierte plurales simples a singular para mejorar busquedas."""
     words = value.split()
     result = []
 
@@ -213,6 +221,7 @@ def singularize_basic(value):
 
 
 def product_search_keys(value):
+    """Genera claves de busqueda de producto para singular/plural."""
     normalized = normalize_key(value)
     singular = normalize_key(singularize_basic(normalized))
 
@@ -222,43 +231,51 @@ def product_search_keys(value):
     ]))
 
 def display_name(value):
+    """Prepara nombres con capitalizacion limpia antes de guardarlos."""
     value = re.sub(r"^(?:llamado|llamada)\s+", "", value.strip(), flags=re.IGNORECASE)
     acronyms = {"api", "erp", "hepa", "llm", "sku"}
     return " ".join(word.upper() if word in acronyms else word.capitalize() for word in value.split())
 
 
 def decimal_value(value, default=0):
+    """Convierte texto numerico del mensaje a numero compatible con precios."""
     if value is None:
         return default
     return float(value.replace(",", "."))
 
 
 def clean_identifier(value):
+    """Limpia IDs o tokens que llegan desde texto libre."""
     return value.strip().strip(".:,;")
 
 def clean_text_field(value):
+    """Limpia campos libres como direccion, motivo o descripcion."""
     if not value:
         return ""
     return value.strip().strip(".,;")
 
 
 def extract_email(message):
+    """Extrae email cuando el usuario crea o actualiza un proveedor."""
     match = re.search(r"\bemail\s+(?P<email>\S+)", message)
     return clean_text_field(match.group("email")) if match else None
 
 
 def extract_phone(message):
+    """Extrae telefono simple desde un mensaje natural."""
     match = re.search(r"\b(?:telefono|tlf|tel)\s+(?P<phone>[\d+ ]+)", message)
     if not match:
         match = re.search(r"\bcon el telefono\s+(?P<phone>[\d+ ]+)", message)
     return clean_text_field(match.group("phone")) if match else ""
 
 def extract_cif(message):
+    """Extrae CIF/NIF escrito en el mensaje para mapearlo a tax_id."""
     match = re.search(r"\bcif\s+(?P<cif>[a-z0-9]+)", message, flags=re.IGNORECASE)
     return match.group("cif").upper() if match else ""
 
 
 def extract_number_after_keywords(message, keywords):
+    """Busca cantidades o precios situados despues de palabras clave."""
     pattern = rf"\b(?:{'|'.join(keywords)})\s+(?P<number>\d+(?:[.,]\d+)?)"
     match = re.search(pattern, message)
     return decimal_value(match.group("number")) if match else None
@@ -269,6 +286,7 @@ def extract_int_after_keywords(message, keywords):
     return int(value) if value is not None else None
 
 def extract_json_object(text):
+    """Recupera JSON devuelto por un LLM aunque venga rodeado de texto."""
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
@@ -284,6 +302,7 @@ def extract_json_object(text):
 
 
 def normalize_llm_result(result):
+    # Asegura que cualquier proveedor devuelva siempre intent, reply y data.
     intent = result.get("intent", "fallback")
     if intent not in ALLOWED_INTENTS:
         intent = "fallback"
@@ -297,6 +316,7 @@ def normalize_llm_result(result):
 
 
 def confirmation_token(intent, reply, data):
+    # Codifica una accion pendiente para confirmarla despues con "si".
     return f"{CONFIRMATION_PREFIX}{json.dumps({'intent': intent, 'reply': reply, 'data': data}, ensure_ascii=True)}"
 
 
@@ -312,6 +332,7 @@ def confirmation_required_result(intent, reply, data, prompt):
 
 
 def parse_confirmation_token(message):
+    """Convierte el token de confirmacion en una accion ya autorizada."""
     if not message.startswith(CONFIRMATION_PREFIX):
         return None
     payload = json.loads(message[len(CONFIRMATION_PREFIX) :])
@@ -321,6 +342,7 @@ def parse_confirmation_token(message):
 
 
 def fallback_result(provider_name, user_message, context, reason):
+    """Respuesta de seguridad cuando un proveedor LLM falla o no tiene clave."""
     return {
         "intent": "fallback",
         "reply": LLM_ERROR_MESSAGE,
@@ -331,6 +353,7 @@ def fallback_result(provider_name, user_message, context, reason):
 
 
 def product_payload(match):
+    """Construye payload de producto desde una coincidencia regex del proveedor mock."""
     return {
         "name": display_name(match.group("name")),
         "stock": int(match.group("stock") or 0),
@@ -342,6 +365,7 @@ def product_payload(match):
 
 
 def integer_from_text(value):
+    """Extrae el primer numero entero de un fragmento de texto."""
     if value is None:
         return None
     return int(re.search(r"\d+", value).group())
@@ -444,6 +468,7 @@ def detect_compound_request(message):
 
 
 class MockLLMProvider(BaseLLMProvider):
+    # Proveedor de demo: interpreta comandos con reglas locales sin llamar APIs externas.
     name = "mock"
 
     def generate_response(self, user_message, context):
@@ -1483,6 +1508,7 @@ class MockLLMProvider(BaseLLMProvider):
 
 
 class OpenAIProvider(BaseLLMProvider):
+    # Proveedor LLM real para OpenAI: usa SYSTEM_PROMPT y normaliza la respuesta JSON.
     name = "openai"
 
     def generate_response(self, user_message, context):
@@ -1524,6 +1550,7 @@ class OpenAIProvider(BaseLLMProvider):
 
 
 class GeminiProvider(BaseLLMProvider):
+    # Proveedor LLM real para Gemini: permite usar modelos Gemini configurados por entorno.
     name = "gemini"
 
     def __init__(self, model=None):
@@ -1589,6 +1616,7 @@ class GeminiProvider(BaseLLMProvider):
 
 
 class ClaudeProvider(BaseLLMProvider):
+    # Proveedor LLM real para Anthropic/Claude.
     name = "claude"
 
     def generate_response(self, user_message, context):
@@ -1627,6 +1655,7 @@ class ClaudeProvider(BaseLLMProvider):
 
 
 class LocalLLMProvider(BaseLLMProvider):
+    # Proveedor local tipo Ollama; si falla, cae al proveedor mock para mantener la demo.
     name = "local"
 
     def generate_response(self, user_message, context):
@@ -1664,6 +1693,7 @@ class LocalLLMProvider(BaseLLMProvider):
 
 
 def get_provider(provider_name=None):
+    # Selecciona el proveedor LLM solicitado desde el frontend o el definido por defecto.
     selected = (provider_name or os.getenv("DEFAULT_LLM_PROVIDER", "mock")).lower()
     gemini_models = {
         "gemini": "gemini-2.5-flash",

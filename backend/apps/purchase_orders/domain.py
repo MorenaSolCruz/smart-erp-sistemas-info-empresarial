@@ -5,6 +5,8 @@ OPEN_ORDER_STATUSES = {"pending", "partially_received"}
 FINAL_ORDER_STATUSES = {"received", "cancelled", "closed_partial"}
 ORDER_STATUS_CHOICES = ["pending", "partially_received", "received", "cancelled", "closed_partial"]
 
+# Los estados se separan en domain.py para que las reglas de negocio no dependan
+# de Django REST. Asi se pueden probar con tests unitarios sin pasar por la API.
 
 class PurchaseOrderDomainError(Exception):
     default_message = "No se pudo completar la operacion de pedidos."
@@ -42,6 +44,7 @@ def utcnow():
 
 
 def build_order_event(event_type, summary, items=None, metadata=None):
+    # Crea una entrada de historial legible para cada cambio importante del pedido.
     payload = {
         "event": event_type,
         "summary": summary,
@@ -55,6 +58,12 @@ def build_order_event(event_type, summary, items=None, metadata=None):
 
 
 def ensure_open_for_edit(order):
+    """Permite editar solo pedidos pendientes.
+
+    Cuando un pedido ya tiene recepciones o cierres, modificarlo directamente
+    podria descuadrar stock; por eso se obliga a usar acciones de recepcion o
+    cancelacion.
+    """
     if order.status != "pending":
         raise OrderNotEditableError(
             "Solo se pueden editar pedidos pendientes. Usa recepcion o cancelacion para continuar."
@@ -62,6 +71,7 @@ def ensure_open_for_edit(order):
 
 
 def ensure_open_for_receipt(order):
+    """Valida que un pedido pueda recibir mercancia."""
     if order.status == "received":
         raise OrderAlreadyReceivedError()
     if order.status == "cancelled":
@@ -71,6 +81,7 @@ def ensure_open_for_receipt(order):
 
 
 def ensure_open_for_cancellation(order):
+    """Valida que aun existan cantidades cancelables en el pedido."""
     if order.status == "received":
         raise PurchaseOrderDomainError("No puedes cancelar un pedido que ya ha sido recibido por completo.")
     if order.status in {"cancelled", "closed_partial"}:
@@ -78,6 +89,7 @@ def ensure_open_for_cancellation(order):
 
 
 def refresh_order_item(item):
+    # Recalcula cantidades pendientes, importe de linea y estado de cada producto pedido.
     ordered = int(item["quantity"])
     received = int(item.get("received_quantity") or 0)
     cancelled = int(item.get("cancelled_quantity") or 0)
@@ -106,6 +118,7 @@ def refresh_order_item(item):
 
 
 def infer_order_status(items):
+    # Deriva el estado general del pedido a partir del estado de sus lineas.
     if not items:
         return "pending"
     pending_exists = any(int(item.get("pending_quantity") or 0) > 0 for item in items)
@@ -120,6 +133,7 @@ def infer_order_status(items):
 
 
 def validate_received_quantity(order_item, quantity):
+    # Protege recepciones parciales: no permite recibir mas de lo pendiente.
     if quantity <= 0:
         raise ExcessiveReceiptQuantityError("La cantidad recibida debe ser mayor que cero.")
     pending_quantity = int(order_item.get("pending_quantity") or 0)

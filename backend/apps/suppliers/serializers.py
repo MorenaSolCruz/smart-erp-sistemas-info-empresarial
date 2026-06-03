@@ -2,6 +2,11 @@ from rest_framework import serializers
 
 
 class SupplierSerializer(serializers.Serializer):
+    """Contrato de datos de proveedor.
+
+    Permite validar email, datos fiscales y lista de productos suministrados
+    antes de que el servicio cree o actualice el proveedor en MongoDB.
+    """
     id = serializers.CharField(read_only=True)
     name = serializers.CharField(max_length=120)
     contact_email = serializers.EmailField(required=False, allow_blank=True, default="")

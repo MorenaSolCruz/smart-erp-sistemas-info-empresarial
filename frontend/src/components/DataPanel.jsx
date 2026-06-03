@@ -1,4 +1,5 @@
 function formatNumber(value) {
+  // Formatea numeros para tablas, KPIs y graficas con formato espanol.
   const number = Number(value);
   if (!Number.isFinite(number)) {
     return value ?? "";
@@ -7,6 +8,7 @@ function formatNumber(value) {
 }
 
 function formatDate(value) {
+  // Convierte fechas ISO del backend a una fecha legible en la interfaz.
   if (!value) {
     return "Sin fecha";
   }
@@ -30,6 +32,7 @@ function chartPercent(value, total) {
 }
 
 function polarToCartesian(centerX, centerY, radius, angleInDegrees) {
+  // Convierte angulos en coordenadas SVG para dibujar segmentos del donut.
   const angleInRadians = ((angleInDegrees - 90) * Math.PI) / 180;
   return {
     x: centerX + radius * Math.cos(angleInRadians),
@@ -38,6 +41,7 @@ function polarToCartesian(centerX, centerY, radius, angleInDegrees) {
 }
 
 function describeArc(x, y, radius, startAngle, endAngle) {
+  // Construye el path SVG de un arco; DonutChart lo usa para cada porcion.
   const start = polarToCartesian(x, y, radius, endAngle);
   const end = polarToCartesian(x, y, radius, startAngle);
   const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
@@ -45,15 +49,18 @@ function describeArc(x, y, radius, startAngle, endAngle) {
 }
 
 function shortLabel(value, maxLength = 14) {
+  // Recorta etiquetas largas para que no rompan ejes de graficas.
   const label = String(value ?? "");
   return label.length > maxLength ? `${label.slice(0, maxLength - 1)}...` : label;
 }
 
 function chartPoint(x, y) {
+  // Normaliza coordenadas con dos decimales para paths SVG mas legibles.
   return `${Number(x).toFixed(2)},${Number(y).toFixed(2)}`;
 }
 
 function statusTone(status) {
+  // Asocia estados de pedidos/operaciones a colores visuales.
   const normalized = String(status || "").toLowerCase();
   if (["received", "success", "active"].includes(normalized)) {
     return "success";
@@ -68,10 +75,12 @@ function statusTone(status) {
 }
 
 function StatusBadge({ value }) {
+  // Badge reutilizable para que estados como pending/received/cancelled sean visibles.
   return <span className={`status-badge status-${statusTone(value)}`}>{String(value ?? "-")}</span>;
 }
 
 function InlineMetric({ label, value }) {
+  // Mini KPI usado dentro de lineas de pedido para mostrar cantidades y total.
   return (
     <span className="inline-metric">
       <strong>{value}</strong>
@@ -81,6 +90,7 @@ function InlineMetric({ label, value }) {
 }
 
 function renderCellContent(column, value) {
+  // Decide como pintar cada celda: fechas, estados, arrays, historiales o texto simple.
   if (column === "status") {
     return <StatusBadge value={value} />;
   }
@@ -167,6 +177,7 @@ function renderCellContent(column, value) {
 }
 
 function DonutChart({ title, rows, labelKey, valueKey }) {
+  // Grafica circular usada para distribuir unidades desechadas por producto.
   if (!rows?.length) {
     return (
       <section className="panel-card">
@@ -249,6 +260,7 @@ function DonutChart({ title, rows, labelKey, valueKey }) {
 }
 
 function ParetoChart({ title, rows, labelKey, valueKey }) {
+  // Grafica de Pareto para ver que motivos/productos concentran mas impacto.
   if (!rows?.length) {
     return (
       <section className="panel-card">
@@ -361,6 +373,7 @@ function ParetoChart({ title, rows, labelKey, valueKey }) {
 }
 
 function DataTable({ title, rows }) {
+  // Tabla generica: sirve para proveedores, pedidos, desechos, auditoria y objetos simples.
   if (!rows?.length) {
     return (
       <section className="panel-card">
@@ -451,6 +464,7 @@ function KpiCard({ label, value, tone = "neutral" }) {
 }
 
 function StatisticsDashboard({ data }) {
+  // Panel ejecutivo de estadisticas: KPIs, foco de merma y graficas.
   const productsCount = data.low_stock_products?.length || 0;
   const wastedUnits = (data.most_wasted_products || []).reduce((total, row) => total + Number(row.wasted_quantity || 0), 0);
   const economicLoss = (data.waste_economic_losses || []).reduce((total, row) => total + Number(row.economic_loss || 0), 0);
@@ -495,6 +509,7 @@ function StatisticsDashboard({ data }) {
 }
 
 function ProductLivePanel({ title, rows }) {
+  // Vista especial para inventario: barras de stock y resumen de unidades.
   const totalUnits = rows.reduce((total, product) => total + Number(product.stock || 0), 0);
   const maxStock = Math.max(...rows.map((product) => Number(product.stock) || 0), 1);
 
@@ -536,6 +551,7 @@ function ProductLivePanel({ title, rows }) {
 }
 
 export default function DataPanel({ data, title = "Resultados", isRefreshing = false }) {
+  // Decide que vista usar segun la forma de los datos devueltos por el backend.
   if (!data) {
     return (
       <section className="panel-card empty-state">

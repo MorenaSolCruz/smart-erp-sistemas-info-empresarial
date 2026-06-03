@@ -7,10 +7,16 @@ from apps.products.models import Product
 
 
 def normalize_lookup(value):
+    """Normaliza texto para busquedas flexibles de productos.
+
+    Quita diferencias de mayusculas, tildes y espacios para que el agente pueda
+    encontrar "sensor termico" aunque el usuario escriba "Sensor Térmico".
+    """
     return " ".join(value.lower().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u").split())
 
 
 def singular_tokens(value):
+    """Reduce plurales simples para mejorar coincidencias de nombres."""
     tokens = normalize_lookup(value).split()
     return [token[:-1] if token.endswith("s") and len(token) > 3 else token for token in tokens]
 
@@ -48,6 +54,8 @@ def _contains_dangerous_name_overlap(query_name, product_name):
 
 
 def _resolve_product_candidates(name):
+    # Busca productos por nombre exacto y por coincidencia flexible.
+    # Si hay ambiguedad, fuerza al usuario/agente a indicar el nombre exacto.
     products = list(Product.objects.order_by("name"))
     normalized_name = normalize_lookup(name)
 
@@ -78,6 +86,11 @@ def _resolve_product_candidates(name):
 
 
 def serialize_product(product):
+    """Transforma un documento Product en JSON para API/frontend.
+
+    MongoEngine usa objetos y Decimal/DateTime; aqui se convierten a strings,
+    floats y valores simples para que React pueda mostrar tablas y graficas.
+    """
     return {
         "id": str(product.id),
         "name": product.name,
@@ -95,11 +108,14 @@ def serialize_product(product):
 def list_products():
     from apps.waste.services import process_expired_products
 
+    # Antes de listar, procesa caducidades para que el stock mostrado sea real.
     process_expired_products()
     return [serialize_product(product) for product in Product.objects.order_by("name")]
 
 
 def product_insights(kind, limit=None, threshold=None, search=None):
+    # Consultas avanzadas usadas por el agente: stock bajo, inventario total,
+    # busquedas por nombre, productos caros, resumen, etc.
     products = list(Product.objects)
     if kind == "low_stock":
         max_stock = int(threshold if threshold is not None else 5)
@@ -175,6 +191,12 @@ def get_product_document_by_name(name):
 
 
 def create_product(data):
+    """Alta de producto.
+
+    Crea inventario nuevo con categoria, stock, precio y caducidad. El nombre se
+    valida sin distinguir mayusculas para evitar duplicados como "Filtro HEPA" y
+    "filtro hepa", que luego confundiran pedidos y desechos.
+    """
     if Product.objects(name__iexact=data["name"]).first():
         raise NotUniqueError("Ya existe un producto con ese nombre.")
 
@@ -195,6 +217,12 @@ def create_product(data):
 
 
 def update_product(product_id, data):
+    """Actualiza un producto existente sin obligar a reenviar todos los campos.
+
+    Si cambia el nombre, tambien se actualizan las lineas de pedidos que guardan
+    `product_name` como texto. Esto mantiene coherencia entre inventario y pedidos
+    cuando el profesor consulte historiales en la interfaz.
+    """
     product = Product.objects.get(id=product_id)
     previous_name = product.name
 
@@ -215,12 +243,19 @@ def update_product(product_id, data):
 
 
 def delete_product(product_id, quantity=None):
+    """Elimina un producto o descuenta una cantidad concreta de stock.
+
+    Con `quantity` se comporta como ajuste parcial de inventario. Sin `quantity`
+    intenta borrar el producto completo, pero bloquea el borrado si hay pedidos o
+    desechos asociados para no dejar referencias rotas.
+    """
     from apps.purchase_orders.models import PurchaseOrder
     from apps.waste.models import WasteRecord
 
     product = Product.objects.get(id=product_id)
 
     if quantity is not None:
+        # Si llega una cantidad, se interpreta como salida parcial de stock.
         quantity = int(quantity)
         if quantity <= 0:
             raise ValidationError("La cantidad a borrar debe ser mayor que cero.")
@@ -239,6 +274,7 @@ def delete_product(product_id, quantity=None):
         }
 
     if PurchaseOrder.objects(items__product_id=str(product.id)).first():
+        # No se borra un producto referenciado por pedidos para no romper el ERP.
         raise ValidationError("No se puede eliminar el producto porque aparece en pedidos. Puedes actualizarlo o revisar los pedidos asociados.")
 
     if WasteRecord.objects(product=product).first():
@@ -249,6 +285,11 @@ def delete_product(product_id, quantity=None):
 
 
 def clear_products_inventory():
+    """Vacia todo el inventario solo si no hay dependencias.
+
+    Se protege contra borrados masivos cuando existen pedidos o desechos, porque
+    esos registros necesitan productos para conservar trazabilidad.
+    """
     from apps.purchase_orders.models import PurchaseOrder
     from apps.waste.models import WasteRecord
 
@@ -270,6 +311,7 @@ def clear_products_inventory():
 
 
 def adjust_stock(product, quantity_delta):
+    # Punto central para entradas y salidas de stock. Lo reutilizan pedidos y desechos.
     new_stock = product.stock + quantity_delta
     if new_stock < 0:
         raise ValidationError("El stock no puede quedar en negativo.")

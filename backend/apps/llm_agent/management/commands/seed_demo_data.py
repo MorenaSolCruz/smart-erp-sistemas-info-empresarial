@@ -13,9 +13,13 @@ from apps.waste.services import create_waste_record
 
 
 class Command(BaseCommand):
+    # Comando ejecutado por docker-compose antes de runserver. Deja una base
+    # minima para que la demo tenga productos, proveedores, pedidos y desechos.
     help = "Carga datos demo si la base esta vacia."
 
     def handle(self, *args, **options):
+        # Solo carga datos si la base esta totalmente vacia; asi no pisa cambios
+        # hechos durante pruebas o durante una auditoria.
         if any(
             [
                 Product.objects.count() > 0,
@@ -29,6 +33,8 @@ class Command(BaseCommand):
 
         now = datetime.utcnow()
 
+        # Proveedores demo: cada uno declara productos suministrados, lo que
+        # ayuda a probar memoria del chat y reposicion automatica.
         suppliers = [
             create_supplier(
                 {
@@ -59,6 +65,8 @@ class Command(BaseCommand):
             ),
         ]
 
+        # Productos demo: incluyen categorias, stock minimo, precio y caducidad
+        # para activar estadisticas, alertas de stock y desechos automaticos.
         create_product(
             {
                 "name": "Filtro HEPA",
@@ -115,6 +123,8 @@ class Command(BaseCommand):
             }
         )
 
+        # Pedidos demo: permiten ensenar el modulo de pedidos sin tener que
+        # crear ordenes desde cero durante la presentacion.
         create_purchase_order(
             {
                 "supplier_id": suppliers[0]["id"],
@@ -128,6 +138,7 @@ class Command(BaseCommand):
             }
         )
 
+        # Desecho demo manual: genera perdida economica y alimenta las graficas.
         create_waste_record(
             {
                 "product_name": "Sensor Termico",

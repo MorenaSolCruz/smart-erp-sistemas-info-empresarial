@@ -1,3 +1,5 @@
+# Pruebas del proveedor LLM y borrado de inventario: verifican que el agente
+# interprete correctamente eliminaciones y ajustes sobre productos.
 import unittest
 
 from apps.llm_agent.providers import MockLLMProvider

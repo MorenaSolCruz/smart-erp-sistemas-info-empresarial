@@ -2,6 +2,11 @@ from rest_framework import serializers
 
 
 class PurchaseOrderItemSerializer(serializers.Serializer):
+    """Valida cada linea del pedido.
+
+    Cada linea debe apuntar a un producto por id o nombre y llevar cantidad.
+    El precio puede venir indicado o tomar el precio actual del producto.
+    """
     product_id = serializers.CharField(required=False, allow_blank=True)
     product_name = serializers.CharField(required=False, allow_blank=True)
     quantity = serializers.IntegerField(min_value=1)
@@ -9,6 +14,7 @@ class PurchaseOrderItemSerializer(serializers.Serializer):
 
 
 class PurchaseOrderSerializer(serializers.Serializer):
+    """Contrato principal de pedido de compra para crear o editar pedidos."""
     id = serializers.CharField(read_only=True)
     supplier_id = serializers.CharField()
     items = PurchaseOrderItemSerializer(many=True)
@@ -22,12 +28,14 @@ class PurchaseOrderSerializer(serializers.Serializer):
 
 
 class PurchaseOrderReceiptItemSerializer(serializers.Serializer):
+    """Contrato para recepciones parciales: producto recibido y cantidad."""
     product_id = serializers.CharField(required=False, allow_blank=True)
     product_name = serializers.CharField(required=False, allow_blank=True)
     quantity = serializers.IntegerField(min_value=1)
 
 
 class PurchaseOrderActionSerializer(serializers.Serializer):
+    """Valida acciones especiales sobre pedidos: recibir o cancelar."""
     action = serializers.ChoiceField(choices=["receive", "cancel"])
     received_items = PurchaseOrderReceiptItemSerializer(many=True, required=False)
     reason = serializers.CharField(required=False, allow_blank=True)

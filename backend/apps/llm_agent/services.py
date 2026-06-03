@@ -68,6 +68,7 @@ CONVERSATION_MEMORY = {
 
 
 def get_conversation_context():
+    # Devuelve la memoria conversacional usada para interpretar frases como "hazle un pedido".
     return {
         "last_supplier_name": CONVERSATION_MEMORY.get("last_supplier_name"),
         "last_product_name": CONVERSATION_MEMORY.get("last_product_name"),
@@ -146,6 +147,7 @@ def confirmation_prompt_for(intent, data):
 
 
 def maybe_require_confirmation(message, result):
+    # Intercepta acciones sensibles para pedir "si/no" antes de borrar o modificar datos criticos.
     intent = result.get("intent")
     result_data = result.get("data", {}) or {}
     sensitive_intents = {
@@ -194,6 +196,7 @@ def low_stock_note(product_name, stock, minimum_stock):
 
 
 def proactive_note_for(action, data):
+    # Genera avisos extra, por ejemplo cuando una operacion deja un producto bajo stock minimo.
     if not isinstance(data, dict):
         return None
 
@@ -225,6 +228,7 @@ def proactive_note_for(action, data):
 
 
 def find_supplier_for_product(product_name):
+    # Busca el proveedor que declara suministrar un producto determinado.
     normalized = normalize_action_message(product_name or "")
     for supplier in Supplier.objects.order_by("name"):
         products_supplied = supplier.products_supplied or []
@@ -235,6 +239,7 @@ def find_supplier_for_product(product_name):
 
 
 def maybe_auto_generate_replenishment(action, data):
+    # Si la reposicion automatica esta activa, crea un pedido cuando el stock baja del umbral.
     if not CONVERSATION_MEMORY.get("auto_replenishment_enabled"):
         return None
     if not isinstance(data, dict):
@@ -279,6 +284,7 @@ def maybe_auto_generate_replenishment(action, data):
 
 
 def audit_entities_for(action, data):
+    # Traduce una accion del agente a entidad principal y entidades relacionadas para auditoria.
     if not isinstance(data, dict):
         return "", "", "", []
 
@@ -336,6 +342,7 @@ def audit_entities_for(action, data):
 
 
 def record_action_audit(action, reply, data):
+    # Guarda una traza de acciones ejecutadas correctamente para poder consultarlas por chat.
     entity_type, entity_name, entity_id, related_entities = audit_entities_for(action, data or {})
     payload = data if isinstance(data, dict) else {}
     if isinstance(data, list):
@@ -363,6 +370,7 @@ def audit_history_reply(target_label, requested_limit, total_available):
 
 
 def execute_audit_history_request(data):
+    # Resuelve peticiones tipo "muestrame las ultimas acciones sobre este proveedor".
     limit = int(data.get("limit") or 10)
     if data.get("audit_scope") == "supplier":
         supplier_name = data["supplier_name"]
@@ -491,6 +499,7 @@ def parse_pending_duplicate_update_command(message, context):
 
 
 def parse_auto_replenishment_command(message):
+    # Detecta comandos escritos a mano para activar/desactivar reposicion automatica.
     normalized_message = normalize_action_message(message).strip()
     if not any(
         term in normalized_message
@@ -538,6 +547,7 @@ def parse_auto_replenishment_command(message):
 
 
 def parse_demo_shortcut_command(message, context):
+    # Reglas locales para comandos frecuentes de la demo, sin depender siempre del LLM.
     import re
 
     normalized_message = normalize_action_message(message).strip()
@@ -665,16 +675,24 @@ def parse_demo_shortcut_command(message, context):
 
 
 def execute_agent_action(message, provider_name=None, request_id=None):
+    # Orquestador principal del agente: obtiene intencion, valida confirmaciones,
+    # llama al CRUD correspondiente y construye la respuesta final para React.
     process_expired_products()
     provider = get_provider(provider_name)
     with ObservedOperation("agent_chat", request_id=request_id, provider=provider.name) as operation:
         intent = "fallback"
         try:
+            # 1) Cargar memoria: permite frases como "hazle un pedido" despues
+            # de haber mencionado un proveedor en el mensaje anterior.
             conversation_context = get_conversation_context()
             confirmed_action = parse_confirmation_token(message.strip())
             if confirmed_action:
+                # 2) Si el usuario confirmo una accion sensible, se recupera el
+                # payload original y se marca como autorizado.
                 result = confirmed_action
             else:
+                # 3) Primero se prueban reglas locales de demo/configuracion.
+                # Si ninguna encaja, se delega en el proveedor LLM seleccionado.
                 direct_auto_replenishment = parse_auto_replenishment_command(message)
                 if direct_auto_replenishment:
                     result = direct_auto_replenishment
@@ -694,6 +712,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
             increment_metric("agent_intent_total", tags={"provider": provider.name, "intent": intent})
 
             if result.get("llm_error"):
+                # 4) Si el proveedor real falla, se informa sin modificar datos.
                 operation.failure("technical", "llm_unavailable", intent=intent)
                 return build_agent_response(
                     provider.name,
@@ -708,11 +727,14 @@ def execute_agent_action(message, provider_name=None, request_id=None):
 
             confirmation_response = maybe_require_confirmation(message, result)
             if confirmation_response:
+                # 5) Acciones delicadas devuelven una pregunta de confirmacion
+                # antes de tocar inventario, proveedores, pedidos o desechos.
                 operation.success(intent="confirmation_required", confirmed=False)
                 confirmation_response["request_id"] = operation.request_id
                 return confirmation_response
 
             if intent == "help":
+                # 6) Ayuda solo devuelve texto; no consulta ni modifica colecciones.
                 clear_pending_action()
                 response = build_agent_response(
                     provider.name, intent, result["reply"], None, provider_status=provider_status, request_id=operation.request_id
@@ -760,6 +782,8 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "list_products":
+                # 7) Desde aqui las intenciones se traducen a servicios reales
+                # del ERP. Este bloque concreto refresca el CRUD de productos.
                 clear_pending_action()
                 data = list_products()
                 response = build_agent_response(
@@ -870,6 +894,8 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "list_suppliers":
+                # Bloque de proveedores: consulta, alta, actualizacion, borrado
+                # individual y borrado masivo confirmado.
                 clear_pending_action()
                 if result.get("data", {}).get("name"):
                     supplier = get_supplier_document_by_name(result["data"]["name"])
@@ -929,6 +955,8 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "list_purchase_orders":
+                # Bloque de pedidos: consulta, creacion, recepcion, cancelacion,
+                # actualizacion y borrado con ajustes de stock cuando corresponde.
                 clear_pending_action()
                 data = list_purchase_orders(status=result.get("data", {}).get("status"))
                 response = build_agent_response(
@@ -1057,6 +1085,8 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "list_waste":
+                # Bloque de desechos: registra mermas, corrige registros y
+                # devuelve stock si se elimina una merma.
                 clear_pending_action()
                 data = list_waste_records()
                 response = build_agent_response(
@@ -1104,6 +1134,8 @@ def execute_agent_action(message, provider_name=None, request_id=None):
                 return response
 
             if intent == "show_statistics":
+                # Bloque de estadisticas: no modifica datos, solo calcula KPIs
+                # y colecciones para el dashboard del frontend.
                 clear_pending_action()
                 data = statistics_overview()
                 response = build_agent_response(
@@ -1169,6 +1201,7 @@ def execute_agent_action(message, provider_name=None, request_id=None):
 
 
 def build_agent_response(provider, action, reply, data, success=True, provider_status=None, error_type=None, request_id=None):
+    # Estandariza la respuesta del agente: texto, accion, datos, proveedor y auditoria.
     if success and action != "fallback":
         reply = professional_reply(action, reply, data)
         auto_replenishment = maybe_auto_generate_replenishment(action, data)
@@ -1193,6 +1226,7 @@ def build_agent_response(provider, action, reply, data, success=True, provider_s
 
 
 def professional_reply(action, fallback_reply, data):
+    # Reescribe respuestas tecnicas en mensajes mas claros para el usuario final.
     if action in ["help", "confirmation_required", "missing_data", "show_audit_history"]:
         return fallback_reply
 
@@ -1283,6 +1317,7 @@ def professional_reply(action, fallback_reply, data):
 
 
 def readable_validation_error(exc):
+    # Limpia mensajes de validacion para que sean comprensibles en el chat.
     message = str(exc)
     replacements = {
         "ValidationError": "Validacion",
@@ -1296,6 +1331,7 @@ def readable_validation_error(exc):
 
 
 def sanitize_agent_data(data):
+    # Quita campos internos que empiezan por "_" antes de enviarlos al frontend.
     if isinstance(data, dict):
         return {key: value for key, value in data.items() if not key.startswith("_")}
     return data

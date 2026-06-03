@@ -1,3 +1,4 @@
+# Pruebas de observabilidad: validan metricas, request_id y registro de errores.
 import os
 import unittest
 

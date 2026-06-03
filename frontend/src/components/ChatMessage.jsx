@@ -1,4 +1,6 @@
 export default function ChatMessage({ role, content, meta, thinking = false }) {
+  // Renderiza cada burbuja del chat: mensajes del usuario, respuestas de Maja
+  // y el estado animado mientras el backend procesa la orden.
   return (
     <div className={`message message-${role} ${thinking ? "message-thinking" : ""}`}>
       <div className="message-role">{role === "user" ? "Usuario" : "Maja"}</div>

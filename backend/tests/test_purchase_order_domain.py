@@ -1,3 +1,5 @@
+# Pruebas de dominio de pedidos: validan estados, cantidades recibidas y reglas
+# de negocio independientes de la API.
 from datetime import datetime
 from decimal import Decimal
 import unittest

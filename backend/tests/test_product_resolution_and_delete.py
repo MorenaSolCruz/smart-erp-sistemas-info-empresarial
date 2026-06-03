@@ -1,3 +1,4 @@
+# Pruebas de productos: cubren busqueda flexible, ambiguedades y reglas de borrado.
 from datetime import datetime
 from decimal import Decimal
 import unittest

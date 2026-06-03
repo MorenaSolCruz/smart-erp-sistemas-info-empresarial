@@ -1,3 +1,5 @@
+# Pruebas del flujo de confirmacion: comprueban que acciones sensibles pidan
+# "si/no" antes de borrar o modificar datos importantes.
 from datetime import datetime
 import unittest
 

@@ -17,10 +17,13 @@ from apps.purchase_orders.services import (
 
 
 class PurchaseOrderListCreateView(APIView):
+    # Endpoint /api/purchase-orders/: lista pedidos o crea uno nuevo.
     def get(self, request):
+        # GET lista pedidos; el query param status permite ver pendientes o recibidos.
         return Response(list_purchase_orders(status=request.query_params.get("status")))
 
     def post(self, request):
+        # POST crea un pedido nuevo. El servicio resuelve proveedor/productos y calcula total.
         serializer = PurchaseOrderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -35,13 +38,16 @@ class PurchaseOrderListCreateView(APIView):
 
 
 class PurchaseOrderDetailView(APIView):
+    # Endpoint /api/purchase-orders/<id>/: consulta, edita, recibe, cancela o elimina.
     def get(self, request, order_id):
+        # Devuelve detalle de pedido con lineas, estado, totales e historial.
         try:
             return Response(get_purchase_order_by_id(order_id))
         except DoesNotExist:
             return Response({"detail": "Pedido no encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
     def put(self, request, order_id):
+        # PUT edita pedidos pendientes. Si ya hubo recepcion, domain.py bloquea el cambio.
         serializer = PurchaseOrderSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -54,7 +60,9 @@ class PurchaseOrderDetailView(APIView):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     def patch(self, request, order_id):
+        # PATCH con action ejecuta acciones de negocio; sin action reutiliza la edicion completa.
         if request.data.get("action"):
+            # action=receive suma stock; action=cancel cierra cantidades pendientes.
             serializer = PurchaseOrderActionSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             try:
@@ -73,6 +81,7 @@ class PurchaseOrderDetailView(APIView):
         return self.put(request, order_id)
 
     def delete(self, request, order_id):
+        # Al eliminar un pedido recibido se revierte el stock que habia entrado.
         try:
             return Response(delete_purchase_order(order_id))
         except DoesNotExist:

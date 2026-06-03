@@ -1,3 +1,5 @@
+# Pruebas del ciclo de vida de pedidos: crear, recibir parcial/total, cancelar
+# y ajustar stock segun la operacion.
 from datetime import datetime
 from decimal import Decimal
 import unittest

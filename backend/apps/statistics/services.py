@@ -7,6 +7,7 @@ from apps.waste.services import process_expired_products
 
 
 def low_stock_products(limit=5):
+    # Toma los productos con menos unidades para alimentar alertas y KPIs.
     products = Product.objects.order_by("stock")[:limit]
     return [
         {
@@ -19,6 +20,7 @@ def low_stock_products(limit=5):
 
 
 def most_wasted_products(limit=5):
+    # Suma unidades desechadas por producto.
     totals = defaultdict(int)
     for record in WasteRecord.objects:
         totals[record.product.name] += record.quantity
@@ -28,6 +30,7 @@ def most_wasted_products(limit=5):
 
 
 def waste_economic_losses():
+    # Suma dinero perdido agrupado por motivo de desecho.
     totals = defaultdict(float)
     for record in WasteRecord.objects:
         totals[record.reason] += float(record.economic_loss)
@@ -36,6 +39,7 @@ def waste_economic_losses():
 
 
 def waste_quantities_by_reason():
+    # Suma unidades desechadas agrupadas por motivo.
     totals = defaultdict(int)
     for record in WasteRecord.objects:
         totals[record.reason] += int(record.quantity)
@@ -44,6 +48,7 @@ def waste_quantities_by_reason():
 
 
 def expiration_waste_summary():
+    # Resume el impacto especifico de productos caducados.
     expired_records = list(WasteRecord.objects(reason="caducidad"))
     unique_products = {str(record.product.id) for record in expired_records}
     return {
@@ -54,6 +59,7 @@ def expiration_waste_summary():
 
 
 def orders_by_supplier():
+    # Calcula volumen de pedidos e importe por proveedor.
     totals = defaultdict(lambda: {"orders_count": 0, "total_amount": 0.0})
     for order in PurchaseOrder.objects:
         bucket = totals[order.supplier.name]
@@ -71,6 +77,7 @@ def orders_by_supplier():
 
 
 def statistics_overview():
+    # Punto central del dashboard: procesa caducidades y junta todos los indicadores.
     process_expired_products()
     return {
         "low_stock_products": low_stock_products(),

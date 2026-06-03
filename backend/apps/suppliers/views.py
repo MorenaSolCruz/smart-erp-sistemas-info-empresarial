@@ -18,10 +18,13 @@ def sanitize_supplier_response(data):
 
 
 class SupplierListCreateView(APIView):
+    # Endpoint /api/suppliers/: lista proveedores o registra uno nuevo.
     def get(self, request):
+        # GET lista proveedores para el panel y para que el agente pueda mostrarlos.
         return Response(list_suppliers())
 
     def post(self, request):
+        # POST crea o sincroniza proveedor; el servicio evita duplicados por nombre.
         serializer = SupplierSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -35,13 +38,16 @@ class SupplierListCreateView(APIView):
 
 
 class SupplierDetailView(APIView):
+    # Endpoint /api/suppliers/<id>/: consulta, actualiza o elimina un proveedor.
     def get(self, request, supplier_id):
+        # Devuelve datos comerciales del proveedor seleccionado.
         try:
             return Response(get_supplier_by_id(supplier_id))
         except DoesNotExist:
             return Response({"detail": "Proveedor no encontrado."}, status=status.HTTP_404_NOT_FOUND)
 
     def put(self, request, supplier_id):
+        # PUT actualiza todos los campos enviados y conserva coherencia de proveedor.
         serializer = SupplierSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
@@ -52,6 +58,7 @@ class SupplierDetailView(APIView):
             return Response({"detail": "Ya existe un proveedor con ese nombre."}, status=status.HTTP_400_BAD_REQUEST)
 
     def patch(self, request, supplier_id):
+        # PATCH permite cambios parciales como telefono, email o productos suministrados.
         serializer = SupplierSerializer(data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         try:
@@ -62,6 +69,7 @@ class SupplierDetailView(APIView):
             return Response({"detail": "Ya existe un proveedor con ese nombre."}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, supplier_id):
+        # Evita eliminar proveedores que ya tienen pedidos asociados.
         try:
             return Response(delete_supplier(supplier_id))
         except DoesNotExist:

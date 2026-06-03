@@ -26,6 +26,11 @@ from apps.suppliers.models import Supplier
 
 
 def serialize_purchase_order(order):
+    """Convierte un pedido MongoEngine en JSON para API y frontend.
+
+    Incluye lineas, totales, estado e historial para que `DataPanel.jsx` pueda
+    mostrar no solo el pedido, sino tambien su trazabilidad.
+    """
     return {
         "id": str(order.id),
         "supplier_id": str(order.supplier.id),
@@ -42,12 +47,18 @@ def serialize_purchase_order(order):
 
 
 def _status_filter_query(status):
+    """Traduce filtros humanos a filtros MongoEngine.
+
+    `pending` incluye tambien `partially_received`, porque ambos representan
+    pedidos que aun tienen unidades pendientes.
+    """
     if status == "pending":
         return {"status__in": ["pending", "partially_received"]}
     return {"status": status}
 
 
 def list_purchase_orders(status=None):
+    """Lista pedidos, opcionalmente filtrados por estado operativo."""
     orders = PurchaseOrder.objects.order_by("-created_at")
     if status:
         orders = orders.filter(**_status_filter_query(status))
@@ -55,6 +66,11 @@ def list_purchase_orders(status=None):
 
 
 def resolve_purchase_order(order_id):
+    """Resuelve pedidos por ID completo, ID corto o posicion numerica.
+
+    Esto facilita la demo conversacional: el usuario puede decir "pedido 1" o
+    escribir solo el inicio del ID, siempre que no haya ambiguedad.
+    """
     order_id = str(order_id).strip()
     if order_id.isdigit():
         index = int(order_id) - 1
@@ -77,6 +93,11 @@ def get_purchase_order_by_id(order_id):
 
 
 def _build_order_item(product, quantity, unit_price):
+    """Construye una linea normalizada del pedido.
+
+    Guarda cantidades recibidas/canceladas y estado de linea desde el principio
+    para soportar recepciones parciales despues.
+    """
     item = {
         "product_id": str(product.id),
         "product_name": product.name,
@@ -89,12 +110,15 @@ def _build_order_item(product, quantity, unit_price):
     return refresh_order_item(item)
 
 def _dedupe_products_by_normalized_name(products):
+    """Evita duplicados cuando varias claves de busqueda apuntan al mismo producto."""
     result = {}
     for product in products:
         result.setdefault(normalize_key(product.name), product)
     return list(result.values())
 
 def _resolve_product(item):
+    # Convierte lo escrito en una linea de pedido en un producto real del inventario.
+    # Usa coincidencias exactas y aproximadas, pero bloquea resultados ambiguos.
     product_name = item.get("product_name") or item.get("name")
 
     if not product_name:
@@ -156,6 +180,7 @@ def _resolve_product(item):
 
 
 def _normalize_items(raw_items):
+    # Valida lineas del pedido, resuelve productos y calcula el importe total.
     if not raw_items:
         raise InvalidOrderItemError("El pedido debe incluir al menos una linea de producto.")
 
@@ -175,6 +200,7 @@ def _normalize_items(raw_items):
     return normalized_items, total_amount
 
 def normalize_key(value):
+    """Normaliza nombres para comparar productos en pedidos."""
     value = unicodedata.normalize("NFD", value.strip().lower())
     value = "".join(char for char in value if unicodedata.category(char) != "Mn")
     value = re.sub(r"[^a-z0-9\s]", " ", value)
@@ -182,6 +208,7 @@ def normalize_key(value):
 
 
 def singularize_basic(value):
+    """Reduce plurales simples para que 'sensores' pueda encontrar 'sensor'."""
     words = value.split()
     result = []
 
@@ -197,12 +224,14 @@ def singularize_basic(value):
 
 
 def build_product_keys(value):
+    """Genera variantes de busqueda de producto: normal y singularizada."""
     normalized = normalize_key(value)
     singular = normalize_key(singularize_basic(normalized))
 
     return list(dict.fromkeys([normalized, singular]))
 
 def create_purchase_order(data):
+    # Crea el pedido en estado pendiente y deja el primer evento en el historial.
     supplier = Supplier.objects.get(id=data["supplier_id"])
     normalized_items, total_amount = _normalize_items(data["items"])
     now = utcnow()
@@ -220,6 +249,7 @@ def create_purchase_order(data):
 
 
 def update_purchase_order(order_id, data):
+    # Solo se pueden editar pedidos pendientes; pedidos recibidos/cerrados usan acciones.
     order = resolve_purchase_order(order_id)
     ensure_open_for_edit(order)
     supplier = Supplier.objects.get(id=data["supplier_id"])
@@ -258,6 +288,7 @@ def _find_order_item(order, received_item):
 
 
 def receive_purchase_order(order_id, received_items=None):
+    # Recepciona todo o parte del pedido, suma stock y actualiza estados por linea.
     order = PurchaseOrder.objects.get(id=order_id)
     ensure_open_for_receipt(order)
 
@@ -298,6 +329,11 @@ def receive_purchase_order(order_id, received_items=None):
 
 
 def receive_latest_purchase_order_for_supplier(supplier_id, received_items=None):
+    """Recibe el ultimo pedido abierto de un proveedor.
+
+    Se usa cuando el chat recuerda el proveedor y el usuario dice algo como
+    "recibe el pedido de TecnoSur" sin dar ID exacto.
+    """
     supplier = Supplier.objects.get(id=supplier_id)
     order = PurchaseOrder.objects(supplier=supplier, status__in=list(OPEN_ORDER_STATUSES)).order_by("-created_at").first()
     if not order:
@@ -306,6 +342,7 @@ def receive_latest_purchase_order_for_supplier(supplier_id, received_items=None)
 
 
 def cancel_purchase_order(order_id, reason=""):
+    # Cancela las cantidades que aun estaban pendientes de recibir.
     order = PurchaseOrder.objects.get(id=order_id)
     ensure_open_for_cancellation(order)
 
@@ -338,6 +375,7 @@ def cancel_purchase_order(order_id, reason=""):
 
 
 def delete_purchase_order(order_id):
+    # Borra el pedido. Si ya habia mercancia recibida, descuenta esas unidades del inventario.
     order = resolve_purchase_order(order_id)
     affected_products = []
     supplier_name = order.supplier.name
@@ -370,6 +408,11 @@ def delete_purchase_order(order_id):
 
 
 def clear_purchase_orders():
+    """Elimina todos los pedidos revirtiendo stock recibido cuando sea necesario.
+
+    No hace un borrado directo masivo porque cada pedido puede haber sumado stock.
+    Por eso recorre uno por uno usando `delete_purchase_order`.
+    """
     deleted_count = 0
     affected_products = []
 
@@ -386,6 +429,7 @@ def clear_purchase_orders():
 
 
 def order_insights(kind):
+    # Consultas resumidas para el agente: pendientes, ultimo pedido o proveedor con mas pedidos.
     orders = list(PurchaseOrder.objects.order_by("-created_at"))
     if kind == "pending":
         return [serialize_purchase_order(order) for order in orders if order.status in ["pending", "created", "open", "partially_received"]]
@@ -404,6 +448,11 @@ def order_insights(kind):
 
 
 def mark_purchase_order_completed(order_id):
+    """Marca manualmente un pedido como completado.
+
+    Es una utilidad para el agente/demo; las recepciones normales deberian pasar
+    por `receive_purchase_order` para ajustar stock.
+    """
     order = resolve_purchase_order(order_id)
     order.status = "completed"
     order.save()
@@ -411,6 +460,7 @@ def mark_purchase_order_completed(order_id):
 
 
 def append_items_to_purchase_order(order_id, raw_items):
+    # Anade lineas nuevas a un pedido abierto sin reemplazar las existentes.
     order = resolve_purchase_order(order_id)
     ensure_open_for_edit(order)
     normalized_items, added_total_amount = _normalize_items(raw_items)
@@ -430,6 +480,7 @@ def append_items_to_purchase_order(order_id, raw_items):
 
 
 def cancel_latest_purchase_order():
+    """Cancela/elimina el pedido mas reciente cuando el usuario no indica ID."""
     latest = order_insights("latest")
     if not latest:
         raise PurchaseOrder.DoesNotExist("Pedido no encontrado.")

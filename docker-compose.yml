@@ -1,5 +1,7 @@
 services:
   mongodb:
+    # Base de datos documental donde MongoEngine guarda productos, proveedores,
+    # pedidos, desechos y auditoria. El volumen conserva datos entre reinicios.
     image: mongo:7
     container_name: erp-llm-mongodb
     restart: unless-stopped
@@ -9,6 +11,8 @@ services:
       - mongodb_data:/data/db
 
   backend:
+    # API Django REST. Antes de arrancar espera a MongoDB y carga datos demo,
+    # asi el profesor puede ejecutar el proyecto y ver contenido sin crear todo a mano.
     build:
       context: ./backend
     container_name: erp-llm-backend
@@ -27,6 +31,8 @@ services:
              python manage.py runserver 0.0.0.0:8000"
 
   frontend:
+    # Interfaz React/Vite. Llama al backend por VITE_API_BASE_URL y muestra el
+    # ERP como chat + panel lateral de datos.
     build:
       context: ./frontend
     container_name: erp-llm-frontend
@@ -44,5 +50,6 @@ services:
     command: npm run dev -- --host 0.0.0.0 --port 5173
 
 volumes:
+  # Persistencia local de MongoDB para no perder datos al parar los contenedores.
   mongodb_data:
 

@@ -1,3 +1,5 @@
+# Pruebas de interpretacion de pedidos: validan como el agente extrae proveedor,
+# productos y cantidades desde mensajes escritos en lenguaje natural.
 import unittest
 
 from apps.llm_agent.providers import MockLLMProvider

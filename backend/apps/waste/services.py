@@ -9,6 +9,7 @@ from apps.waste.models import WasteRecord
 
 
 def serialize_waste(record):
+    """Convierte un WasteRecord en JSON para mostrar merma y stock restante."""
     return {
         "id": str(record.id),
         "product_id": str(record.product.id),
@@ -23,6 +24,7 @@ def serialize_waste(record):
 
 
 def process_expired_products(reference_time=None):
+    # Automatiza caducidades: productos vencidos pasan a desecho y se descuenta su stock.
     reference_time = reference_time or datetime.utcnow()
     created_records = []
 
@@ -49,11 +51,17 @@ def process_expired_products(reference_time=None):
 
 
 def list_waste_records():
+    """Lista desechos tras procesar caducidades pendientes.
+
+    Asi, si un producto ya vencio, aparece automaticamente como merma antes de
+    que el panel de datos se actualice.
+    """
     process_expired_products()
     return [serialize_waste(record) for record in WasteRecord.objects.order_by("-date")]
 
 
 def resolve_waste_record(record_id):
+    # Acepta IDs completos o prefijos cortos, siempre que no sean ambiguos.
     record_id = str(record_id).strip()
     if len(record_id) < 24:
         matches = [record for record in WasteRecord.objects if str(record.id).startswith(record_id)]
@@ -66,10 +74,16 @@ def resolve_waste_record(record_id):
 
 
 def get_waste_record_by_id(record_id):
+    """Obtiene un desecho por ID completo o corto y lo prepara para la API."""
     return serialize_waste(resolve_waste_record(record_id))
 
 
 def create_waste_record(data):
+    """Registra una merma manual, descuenta stock y calcula perdida economica.
+
+    Puede recibir `product_id` o `product_name`. Esto facilita que el chat acepte
+    frases naturales como "registra 3 unidades de Filtro HEPA por caducidad".
+    """
     if data.get("product_id"):
         product = Product.objects.get(id=data["product_id"])
     elif data.get("product_name"):
@@ -96,6 +110,11 @@ def create_waste_record(data):
 
 
 def update_waste_record(record_id, data):
+    """Corrige una merma existente sin dejar el inventario descuadrado.
+
+    Primero devuelve al stock la cantidad anterior y despues aplica el nuevo
+    producto/cantidad. Este orden evita que una correccion duplique salidas.
+    """
     record = resolve_waste_record(record_id)
 
     if data.get("product_id"):
@@ -123,6 +142,7 @@ def update_waste_record(record_id, data):
 
 
 def delete_waste_record(record_id):
+    # Eliminar una merma recupera el stock descontado por ese registro.
     record = resolve_waste_record(record_id)
     adjust_stock(record.product, record.quantity)
     record.delete()
@@ -130,6 +150,10 @@ def delete_waste_record(record_id):
 
 
 def clear_waste_records():
+    """Borra todos los desechos y devuelve sus cantidades al stock.
+
+    Como afecta inventario de forma masiva, el agente lo protege con confirmacion.
+    """
     count = WasteRecord.objects.count()
     for record in list(WasteRecord.objects):
         adjust_stock(record.product, record.quantity)

@@ -4,6 +4,8 @@ from apps.audit.models import AuditEntry
 
 
 ACTION_LABELS = {
+    # Diccionario de traduccion para que las trazas no muestren nombres tecnicos
+    # como "create_product", sino etiquetas entendibles en el panel y en el chat.
     "list_products": "Consulta de productos",
     "create_product": "Alta de producto",
     "add_product_stock": "Entrada de inventario",
@@ -31,6 +33,13 @@ ACTION_LABELS = {
 
 
 def record_audit(action, summary, entity_type="", entity_name="", entity_id="", related_entities=None, payload=None, status="success"):
+    """Inserta una entrada de auditoria despues de una accion del ERP.
+
+    Se guarda accion, entidad principal y entidades relacionadas para que luego
+    el usuario pueda preguntar por trazabilidad, por ejemplo "ultimas acciones
+    sobre TecnoSur". El `payload` conserva una foto resumida de los datos que
+    participaron en la operacion.
+    """
     entry = AuditEntry(
         action=action,
         entity_type=entity_type or "",
@@ -47,6 +56,11 @@ def record_audit(action, summary, entity_type="", entity_name="", entity_id="", 
 
 
 def serialize_audit_entry(entry):
+    """Convierte una traza de MongoDB en datos sencillos para el chat/panel.
+
+    Esto evita exponer el documento completo y devuelve solo lo que interesa
+    para una auditoria: accion, entidad, resumen, estado y fecha.
+    """
     return {
         "id": str(entry.id),
         "timestamp": entry.created_at.isoformat() if entry.created_at else None,
@@ -60,6 +74,12 @@ def serialize_audit_entry(entry):
 
 
 def _matches_related_entity(entry, entity_type, entity_name):
+    """Comprueba si una traza pertenece a la entidad principal o a una relacionada.
+
+    Ejemplo: un pedido tiene entidad principal `purchase_order`, pero tambien
+    puede estar relacionado con un proveedor. Gracias a esto se puede consultar
+    historial de proveedor aunque la accion registrada fuera sobre un pedido.
+    """
     normalized_name = (entity_name or "").strip().lower()
     if not normalized_name:
         return False
@@ -75,6 +95,7 @@ def _matches_related_entity(entry, entity_type, entity_name):
 
 
 def supplier_audit_history(supplier_name, limit):
+    """Recupera las ultimas acciones vinculadas a un proveedor concreto."""
     matching_entries = [
         entry
         for entry in AuditEntry.objects.order_by("-created_at")
@@ -84,5 +105,6 @@ def supplier_audit_history(supplier_name, limit):
 
 
 def deleted_products_history(limit):
+    """Recupera historial de productos eliminados para consultas de trazabilidad."""
     matching_entries = list(AuditEntry.objects(action="delete_product").order_by("-created_at"))
     return matching_entries[:limit], len(matching_entries)

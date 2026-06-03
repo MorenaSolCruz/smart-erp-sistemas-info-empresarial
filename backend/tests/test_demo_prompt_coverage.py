@@ -1,3 +1,5 @@
+# Pruebas de cobertura de prompts de demo: validan que frases naturales del
+# usuario se transformen en acciones correctas del ERP.
 from datetime import datetime
 from decimal import Decimal
 import unittest

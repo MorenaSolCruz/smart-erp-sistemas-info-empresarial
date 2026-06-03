@@ -7,6 +7,8 @@ from common.observability import generate_request_id, metrics_snapshot
 
 
 class AgentChatView(APIView):
+    # Endpoint /api/agent/chat/: recibe la orden del usuario desde React y
+    # delega en execute_agent_action para clasificarla y ejecutarla.
     def post(self, request):
         serializer = ChatRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -21,5 +23,6 @@ class AgentChatView(APIView):
 
 
 class AgentMetricsView(APIView):
+    # Endpoint de salud/metricas usado por el frontend para saber si el backend esta listo.
     def get(self, request):
         return Response(metrics_snapshot())

@@ -1,3 +1,5 @@
+# Pruebas de errores del agente: comprueban respuestas ante fallos del LLM,
+# datos incompletos o acciones que no se pueden ejecutar.
 import os
 import unittest
 from unittest.mock import Mock, patch
